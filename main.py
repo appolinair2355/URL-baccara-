@@ -9,6 +9,8 @@ from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
 from telethon.tl.functions.channels import EditBannedRequest, GetParticipantsRequest
 from telethon.tl.types import ChatBannedRights, ChannelParticipantsSearch
+from telethon import functions, types
+from telethon.errors import UserNotParticipantError, ChatIdInvalidError
 from aiohttp import web
 from PIL import Image
 from io import BytesIO
@@ -48,7 +50,7 @@ CHANNELS_CONFIG_FILE = os.path.join(DATA_DIR, 'channels_config.json')
 TRIAL_CONFIG_FILE = os.path.join(DATA_DIR, 'trial_config.json')
 OCR_DATA_FILE = os.path.join(DATA_DIR, 'ocr_data.json')
 VALIDATED_PAYMENTS_FILE = os.path.join(DATA_DIR, 'validated_payments.json')
-EXPIRED_NOTIFIED_FILE = os.path.join(DATA_DIR, 'expired_notified.json')  # Nouveau
+EXPIRED_NOTIFIED_FILE = os.path.join(DATA_DIR, 'expired_notified.json')
 
 OCR_API_KEY = os.getenv('OCR_API_KEY', 'K86527928888957')
 PAYMENT_LINK = os.getenv('PAYMENT_LINK', 'https://my.moneyfusion.net/6977f7502181d4ebf722398d')
@@ -100,7 +102,7 @@ trial_config = {'duration_minutes': DEFAULT_TRIAL_DURATION}
 users_data = {}
 ocr_data = {"paiements": {}, "references": {}, "factures": {}}
 validated_payments = {}
-expired_notified = {}  # Pour éviter les notifications multiples
+expired_notified = {}
 
 user_conversation_state = {}
 user_ocr_state = {}
@@ -196,6 +198,19 @@ def is_trial_active(user_id: int) -> bool:
     except:
         return False
 
+def get_remaining_time(user_id: int) -> str:
+    if user_id == ADMIN_ID:
+        return "∞ (Admin)"
+    if is_user_subscribed(user_id):
+        user = get_user(user_id)
+        return format_time_remaining(user.get('subscription_end', ''))
+    elif is_trial_active(user_id):
+        user = get_user(user_id)
+        trial_end = datetime.fromisoformat(user.get('trial_joined_at')) + timedelta(minutes=trial_config['duration_minutes'])
+        remaining = int((trial_end - datetime.now()).total_seconds())
+        return format_seconds(remaining)
+    return "⛔ Expiré"
+
 def format_time_remaining(expiry_iso: str) -> str:
     try:
         expiry = datetime.fromisoformat(expiry_iso)
@@ -248,6 +263,93 @@ def parse_duration(input_str: str) -> int:
         except:
             return 0
     return 0
+
+# ============================================================
+# FONCTIONS DE RETRAIT DU CANAL (NOUVELLES FONCTIONS)
+# ============================================================
+
+async def get_channel_entity(channel_id: int):
+    """
+    Récupère l'entity d'un canal avec gestion d'erreur améliorée.
+    Essaie d'abord get_input_entity, sinon get_entity.
+    """
+    try:
+        entity = await client.get_input_entity(channel_id)
+        return entity
+    except Exception as e:
+        logger.warning(f"get_input_entity a échoué pour {channel_id}: {e}")
+        try:
+            entity = await client.get_entity(channel_id)
+            return entity
+        except Exception as e2:
+            logger.error(f"get_entity a aussi échoué pour {channel_id}: {e2}")
+            raise e2
+
+async def remove_user_from_channel(channel_id: int, user_id: int):
+    """
+    Retire un utilisateur du canal en utilisant kick_participant (méthode fiable)
+    """
+    try:
+        entity = await get_channel_entity(channel_id)
+        
+        # Utiliser kick_participant (fonctionne pour les channels et megagroups)
+        await client.kick_participant(entity, user_id)
+        
+        # Débannir immédiatement pour permettre de revenir plus tard (si réabonnement)
+        await client(EditBannedRequest(
+            channel=entity,
+            participant=user_id,
+            banned_rights=ChatBannedRights(until_date=None, view_messages=False)
+        ))
+        
+        logger.info(f"✅ Utilisateur {user_id} retiré du canal {channel_id}")
+        return True
+        
+    except UserNotParticipantError:
+        logger.warning(f"⚠️ L'utilisateur {user_id} n'est pas membre du canal {channel_id}")
+        return False
+        
+    except ChatIdInvalidError:
+        logger.error(f"❌ ID de canal invalide: {channel_id}")
+        return False
+        
+    except Exception as e:
+        logger.error(f"❌ Erreur lors du retrait de {user_id}: {e}")
+        return False
+
+async def ban_user_from_channel(channel_id: int, user_id: int):
+    """
+    Bannit définitivement un utilisateur du canal
+    """
+    try:
+        entity = await get_channel_entity(channel_id)
+        
+        await client(EditBannedRequest(
+            channel=entity,
+            participant=user_id,
+            banned_rights=ChatBannedRights(
+                until_date=None,
+                view_messages=True,
+                send_messages=True,
+                send_media=True,
+                send_stickers=True,
+                send_gifs=True,
+                send_games=True,
+                send_inline=True,
+                embed_links=True
+            )
+        ))
+        
+        logger.info(f"🔨 Utilisateur {user_id} banni du canal {channel_id}")
+        return True
+        
+    except UserNotParticipantError:
+        logger.warning(f"⚠️ Utilisateur {user_id} non membre du canal {channel_id}")
+        return False
+        
+    except Exception as e:
+        logger.error(f"❌ Erreur bannissement {user_id}: {e}")
+        return False
 
 # ============================================================
 # FONCTIONS OCR
@@ -345,7 +447,6 @@ async def add_user_to_vip(user_id: int, duration_minutes: int, is_trial: bool = 
         now = datetime.now()
         expires_at = now + timedelta(minutes=duration_minutes)
         
-        # Réinitialiser la notification d'expiration si réabonnement
         uid_str = str(user_id)
         if uid_str in expired_notified:
             del expired_notified[uid_str]
@@ -419,7 +520,6 @@ async def add_user_to_vip(user_id: int, duration_minutes: int, is_trial: bool = 
 📅 Expire : {expires_at.strftime('%d/%m/%Y %H:%M')}
 """)
         
-        # Programmer l'expulsion et la notification
         asyncio.create_task(auto_kick_and_notify(user_id, duration_minutes * 60))
         return True
         
@@ -432,7 +532,6 @@ async def extend_or_add_vip(user_id: int, additional_minutes: int, payment_info:
         user = get_user(user_id)
         now = datetime.now()
         
-        # Réinitialiser notification si réabonnement
         uid_str = str(user_id)
         if uid_str in expired_notified:
             del expired_notified[uid_str]
@@ -524,47 +623,43 @@ async def extend_or_add_vip(user_id: int, additional_minutes: int, payment_info:
 
 async def auto_kick_and_notify(user_id: int, delay_seconds: int):
     """
-    NOUVEAU : Attend l'expiration, retire des canaux, notifie user et admin
+    Attend l'expiration, retire des canaux, notifie user et admin
     """
     if user_id == ADMIN_ID:
         return
     
-    # Attendre l'expiration
+    logger.info(f"⏰ Programmation expulsion pour {user_id} dans {delay_seconds}s")
+    
     await asyncio.sleep(delay_seconds)
     
     try:
-        # Vérifier si l'utilisateur a renouvelé entre-temps
         if is_user_subscribed(user_id) or is_trial_active(user_id):
             logger.info(f"✅ Utilisateur {user_id} a renouvelé, annulation expulsion")
             return
         
         user = get_user(user_id)
         uid_str = str(user_id)
+        vip_id = get_vip_channel_id()
+        pred_id = get_prediction_channel_id()
         
-        # Vérifier si déjà notifié pour éviter les doublons
         already_notified = expired_notified.get(uid_str, False)
         
         # 1. RETIRER DU CANAL VIP
+        vip_success = False
         try:
-            vip_entity = await client.get_input_entity(get_vip_channel_id())
-            await client.kick_participant(vip_entity, user_id)
-            await client(EditBannedRequest(
-                channel=vip_entity, participant=user_id,
-                banned_rights=ChatBannedRights(until_date=None, view_messages=False)
-            ))
-            logger.info(f"🚫 Utilisateur {user_id} retiré du canal VIP")
+            vip_success = await remove_user_from_channel(vip_id, user_id)
+            logger.info(f"{'✅' if vip_success else '❌'} Retrait VIP {user_id}")
         except Exception as e:
             logger.error(f"Erreur retrait VIP {user_id}: {e}")
         
         # 2. RETIRER DU CANAL PRÉDICTION (si différent)
-        try:
-            pred_id = get_prediction_channel_id()
-            if pred_id != get_vip_channel_id():
-                pred_entity = await client.get_input_entity(pred_id)
-                await client.kick_participant(pred_entity, user_id)
-                logger.info(f"🚫 Utilisateur {user_id} retiré du canal prédiction")
-        except Exception as e:
-            logger.error(f"Erreur retrait prédiction {user_id}: {e}")
+        pred_success = False
+        if pred_id != vip_id:
+            try:
+                pred_success = await remove_user_from_channel(pred_id, user_id)
+                logger.info(f"{'✅' if pred_success else '❌'} Retrait Prédiction {user_id}")
+            except Exception as e:
+                logger.error(f"Erreur retrait Prédiction {user_id}: {e}")
         
         # 3. METTRE À JOUR LA BASE
         update_user(user_id, {
@@ -576,10 +671,12 @@ async def auto_kick_and_notify(user_id: int, delay_seconds: int):
         
         # 4. NOTIFIER L'UTILISATEUR (seulement si pas déjà notifié)
         if not already_notified:
-            await client.send_message(user_id, f"""
+            try:
+                await client.send_message(user_id, f"""
 😢 **VOTRE ACCÈS EST TERMINÉ** 😢
 
 ⏰ *Votre abonnement VIP a expiré.*
+{'✅ Vous avez été retiré automatiquement du canal.' if vip_success else '⚠️ Contactez l\'admin pour être retiré du canal.'}
 
 💔 *Nous espérons que vous avez apprécié l'expérience !*
 
@@ -592,19 +689,20 @@ async def auto_kick_and_notify(user_id: int, delay_seconds: int):
 
 📞 **Besoin d'aide ?** @Kouamappoloak
 """)
+            except Exception as e:
+                logger.error(f"Erreur notification user {user_id}: {e}")
             
-            # Marquer comme notifié
             expired_notified[uid_str] = {
                 'date': datetime.now().isoformat(),
                 'type': 'expired'
             }
             save_json(EXPIRED_NOTIFIED_FILE, expired_notified)
         
-        # 5. NOTIFIER L'ADMIN (toujours, mais avec indication si déjà notifié)
+        # 5. NOTIFIER L'ADMIN
         notif_status = "🔔 Nouvelle expiration" if not already_notified else "📝 Déjà notifié précédemment"
         
         await client.send_message(ADMIN_ID, f"""
-🚫 **UTILISATEUR EXPIRÉ ET RETIRÉ**
+🚫 **UTILISATEUR EXPIRÉ {'ET RETIRÉ' if vip_success else '(RETRAIT ÉCHEC)'}**
 
 {notif_status}
 
@@ -612,13 +710,13 @@ async def auto_kick_and_notify(user_id: int, delay_seconds: int):
 👤 {user.get('prenom', '')} {user.get('nom', '')}
 🌍 {user.get('pays', 'N/A')}
 
-✅ Actions effectuées :
-• ❌ Retiré du canal VIP
-• ❌ Retiré du canal prédiction
-• 📝 Base de données mise à jour
-• 🔔 Notification envoyée à l'utilisateur
+**Actions :**
+{'✅' if vip_success else '❌'} Retrait canal VIP
+{'✅' if pred_success else '❌'} Retrait canal Prédiction
+✅ Base de données mise à jour
+{'✅' if not already_notified else '⏭️'} Notification utilisateur
 
-💡 `/retirer {user_id}` si besoin de vérifier
+{'✅ Tout est automatique !' if vip_success else '⚠️ **Action manuelle requise :** Vérifiez le canal et retirez l\'utilisateur si nécessaire'}
 """)
         
         logger.info(f"✅ Expiration traitée pour {user_id}")
@@ -653,6 +751,7 @@ async def cmd_start(event):
 👁️ `/watch` - Mode espion temps réel
 ⏫ `/extend ID durée` - Accorder du temps
 🚫 `/retirer ID` - Expulser immédiatement
+🗑️ `/remove ID` - Retirer du système (commande alternative)
 
 ⚙️ **CONFIGURATION :**
 🔗 `/setviplink URL` - Changer lien VIP
@@ -734,7 +833,8 @@ async def cmd_help(event):
 `/extend 123456 2h` - Ajouter 2 heures
 
 **Contrôle absolu :**
-`/retirer 123456` - Expulsion immédiate
+`/retirer 123456` - Expulsion immédiate des canaux
+`/remove 123456` - Retirer du système uniquement
 
 **Configuration système :**
 `/setviplink https://t.me/...` - Nouveau lien VIP
@@ -990,7 +1090,6 @@ async def cmd_adduser(event):
     if event.sender_id != ADMIN_ID:
         return
     
-    # Format: /adduser ID NOM PRENOM PAYS [DUREE_MINUTES]
     parts = event.message.message.strip().split()
     
     if len(parts) < 5:
@@ -1023,7 +1122,6 @@ async def cmd_adduser(event):
         
         uid_str = str(target_id)
         
-        # Vérifier si existe déjà
         if uid_str in users_data and users_data[uid_str].get('registered'):
             await event.respond(f"""
 ⚠️ **UTILISATEUR EXISTANT**
@@ -1034,20 +1132,18 @@ async def cmd_adduser(event):
 """)
             return
         
-        # Créer l'utilisateur
         now = datetime.now()
         user_data = {
             'registered': True,
             'nom': nom,
             'prenom': prenom,
             'pays': pays,
-            'trial_used': duree > 0,  # Si durée > 0, considéré comme payé
+            'trial_used': duree > 0,
             'total_time_added': duree,
             'added_manually': True,
             'added_date': now.isoformat()
         }
         
-        # Si durée précisée, activer l'abonnement
         if duree > 0:
             expires_at = now + timedelta(minutes=duree)
             user_data['subscription_end'] = expires_at.isoformat()
@@ -1056,7 +1152,6 @@ async def cmd_adduser(event):
         
         update_user(target_id, user_data)
         
-        # Message de confirmation
         if duree > 0:
             time_str = format_time_remaining(user_data['subscription_end'])
             await event.respond(f"""
@@ -1070,7 +1165,6 @@ async def cmd_adduser(event):
 
 🔗 **Lien VIP envoyé automatiquement à l'utilisateur**
 """)
-            # Envoyer le lien VIP
             await add_user_to_vip(target_id, duree, is_trial=False)
         else:
             await event.respond(f"""
@@ -1099,7 +1193,14 @@ async def cmd_scan(event):
     
     try:
         vip_id = get_vip_channel_id()
-        entity = await client.get_input_entity(vip_id)
+        
+        if not vip_id or vip_id == 0:
+            await event.respond("❌ **ID du canal VIP non configuré**\n\nUtilisez: `/setvipid -100XXXXXXXXXX`")
+            return
+        
+        logger.info(f"Scan du canal: {vip_id}")
+        
+        entity = await get_channel_entity(vip_id)
         
         participants = []
         async for user in client.iter_participants(entity):
@@ -1146,158 +1247,172 @@ async def cmd_scan(event):
 ⛔ **Inscrits mais expirés :** {len(expires_soon)}
 🔴 **Non inscrits (intrus) :** {len(non_inscrits)}
 
-💡 Utilisez `/scanretire` pour gérer les non-inscrits
+💡 Utilisez `/scanretire` pour gérer les non-inscrits et expirés
 """
         await event.respond(summary)
+        
+        if expires_soon:
+            lines = ["\n⛔ **INSCRITS MAIS EXPIRÉS (À RETIRER) :**\n"]
+            for p in expires_soon[:10]:
+                lines.append(f"🆔 `{p['id']}` | 👤 {p['full_name'][:20]} | `/retirer {p['id']}`")
+            if len(expires_soon) > 10:
+                lines.append(f"\n... et {len(expires_soon) - 10} autres expirés")
+            await event.respond("\n".join(lines))
         
         if non_inscrits:
             lines = ["\n🔴 **MEMBRES NON INSCRITS (INTRUS) :**\n"]
             for p in non_inscrits[:10]:
-                lines.append(f"🆔 `{p['id']}` | 👤 {p['full_name'][:20]} | @{p['username']}")
+                lines.append(f"🆔 `{p['id']}` | 👤 {p['full_name'][:20]} | @{p['username']} | `/retirer {p['id']}`")
             if len(non_inscrits) > 10:
-                lines.append(f"\n... et {len(non_inscrits) - 10} autres")
-            await event.respond("\n".join(lines))
-        
-        if expires_soon:
-            lines = ["\n⛔ **INSCRITS MAIS EXPIRÉS :**\n"]
-            for p in expires_soon[:5]:
-                lines.append(f"🆔 `{p['id']}` | 👤 {p['full_name'][:20]}")
+                lines.append(f"\n... et {len(non_inscrits) - 10} autres intrus")
             await event.respond("\n".join(lines))
             
     except Exception as e:
         logger.error(f"Erreur scan: {e}")
-        await event.respond(f"❌ **Erreur lors du scan :** `{e}`")
+        await event.respond(f"""
+❌ **Erreur lors du scan :** `{e}`
+
+🔧 **Solutions possibles :**
+1. Vérifiez que le bot est bien administrateur du canal
+2. Assurez-vous que le bot a rejoint le canal (pas juste admin)
+3. Vérifiez l'ID avec `/showids`
+4. Essayez de redémarrer le bot
+
+💡 **ID actuel :** `{get_vip_channel_id()}`
+""")
 
 @client.on(events.NewMessage(pattern='/scanretire'))
 async def cmd_scanretire(event):
-    """Scanne et propose de retirer les non-inscrits un par un"""
+    """Scanne et retire automatiquement les non-inscrits et expirés"""
     if event.sender_id != ADMIN_ID:
         return
     
-    await event.respond("🧹 **MODE NETTOYAGE**\n\n🔍 Scan du canal VIP en cours...")
+    status_msg = await event.respond("🧹 **MODE NETTOYAGE INTELLIGENT**\n\n🔍 Analyse du canal VIP en cours...")
     
     try:
         vip_id = get_vip_channel_id()
-        entity = await client.get_input_entity(vip_id)
         
-        intrus = []
+        if not vip_id or vip_id == 0:
+            await event.respond("❌ **ID du canal VIP non configuré**")
+            return
+        
+        entity = await get_channel_entity(vip_id)
+        
+        membres_canal = []
         async for user in client.iter_participants(entity):
             if user.id == ADMIN_ID:
                 continue
-            
-            uid_str = str(user.id)
-            is_valid = False
-            if uid_str in users_data:
-                if is_user_subscribed(user.id) or is_trial_active(user.id):
-                    is_valid = True
-            
-            if not is_valid:
-                intrus.append({
-                    'id': user.id,
-                    'name': f"{user.first_name or ''} {user.last_name or ''}".strip() or 'Anonyme',
-                    'username': user.username or 'N/A'
-                })
-        
-        if not intrus:
-            await event.respond("✅ **AUCUN INTRUS TROUVÉ**\n\nTous les membres sont inscrits et actifs !")
-            return
-        
-        await event.respond(f"🔴 **{len(intrus)} INTRUS DÉTECTÉS**\n\nJe vais vous les présenter un par un avec option de retrait.")
-        
-        for i, intru in enumerate(intrus[:20], 1):
-            buttons = [
-                [Button.inline(f"🚫 RETIRER {intru['id']}", f"remove_{intru['id']}")],
-                [Button.inline("⏭️ SUIVANT", f"skip_{intru['id']}")]
-            ]
-            
-            msg = await event.respond(
-                f"""
-🔴 **INTRU #{i}/{len(intrus)}**
-
-🆔 **ID :** `{intru['id']}`
-👤 **Nom :** {intru['name']}
-📱 **Username :** @{intru['username']}
-
-⚠️ *Cet utilisateur n'est PAS inscrit dans la base ou a expiré*
-
-**Action requise :**
-""",
-                buttons=buttons
-            )
-            
-            pending_removals[intru['id']] = {
-                'message_id': msg.id,
-                'chat_id': event.chat_id,
-                'name': intru['name']
-            }
-            
-            await asyncio.sleep(0.5)
-        
-        if len(intrus) > 20:
-            await event.respond(f"⚠️ *{len(intrus) - 20} autres intrus non affichés. Relancez la commande après traitement.*")
-            
-    except Exception as e:
-        logger.error(f"Erreur scanretire: {e}")
-        await event.respond(f"❌ **Erreur :** `{e}`")
-
-@client.on(events.CallbackQuery(pattern=r'remove_(\d+)'))
-async def callback_remove(event):
-    """Callback pour retirer un intrus"""
-    if event.sender_id != ADMIN_ID:
-        await event.answer("⛔ Non autorisé", alert=True)
-        return
-    
-    user_id = int(event.pattern_match.group(1))
-    
-    try:
-        entity = await client.get_input_entity(get_vip_channel_id())
-        await client.kick_participant(entity, user_id)
-        await client(EditBannedRequest(
-            channel=entity, participant=user_id,
-            banned_rights=ChatBannedRights(until_date=None, view_messages=False)
-        ))
-        
-        uid_str = str(user_id)
-        if uid_str in users_data:
-            update_user(user_id, {
-                'vip_expires_at': None,
-                'subscription_end': None,
-                'is_in_channel': False
+            membres_canal.append({
+                'id': user.id,
+                'name': f"{user.first_name or ''} {user.last_name or ''}".strip() or 'Anonyme',
+                'username': user.username or 'N/A'
             })
         
-        await event.edit(f"""
-✅ **UTILISATEUR RETIRÉ**
+        if not membres_canal:
+            await event.respond("📭 *Aucun membre dans le canal VIP*")
+            return
+        
+        a_retirer = []
+        a_conserver = []
+        
+        for membre in membres_canal:
+            uid = membre['id']
+            uid_str = str(uid)
+            
+            if uid_str not in users_data:
+                membre['raison'] = 'Non inscrit'
+                a_retirer.append(membre)
+            else:
+                if is_user_subscribed(uid) or is_trial_active(uid):
+                    membre['raison'] = 'Actif'
+                    a_conserver.append(membre)
+                else:
+                    membre['raison'] = 'Expiré'
+                    a_retirer.append(membre)
+        
+        await status_msg.edit(f"""
+🧹 **ANALYSE TERMINÉE**
 
-🆔 `{user_id}`
-👤 {pending_removals.get(user_id, {}).get('name', 'Inconnu')}
+👥 **Total dans le canal :** {len(membres_canal)}
+✅ **À conserver :** {len(a_conserver)}
+🚫 **À retirer :** {len(a_retirer)}
 
-🚫 *A été expulsé avec succès*
+{'⚠️ **Aucun membre à retirer**' if not a_retirer else '🔄 **Début du nettoyage automatique...**'}
 """)
         
-        await event.answer("✅ Retiré !", alert=True)
+        if not a_retirer:
+            return
+        
+        retires = []
+        echecs = []
+        
+        for membre in a_retirer:
+            try:
+                success = await remove_user_from_channel(vip_id, membre['id'])
+                
+                if success:
+                    update_user(membre['id'], {
+                        'vip_expires_at': None,
+                        'subscription_end': None,
+                        'is_in_channel': False
+                    })
+                    
+                    if membre['raison'] == 'Expiré':
+                        try:
+                            await client.send_message(membre['id'], """
+⛔ **VOTRE ACCÈS A EXPIRÉ** ⛔
+
+*Vous avez été retiré du canal VIP car votre abonnement est terminé.*
+
+💳 **Pour renouveler :**
+👉 Tapez `/payer`
+
+📞 **Besoin d'aide ?** @Kouamappoloak
+""")
+                        except:
+                            pass
+                    
+                    retires.append(membre)
+                else:
+                    echecs.append(membre)
+                    
+                await asyncio.sleep(0.5)
+                
+            except Exception as e:
+                logger.error(f"Erreur retrait {membre['id']}: {e}")
+                echecs.append(membre)
+        
+        rapport = f"""
+✅ **NETTOYAGE TERMINÉ**
+
+🗑️ **Retirés :** {len(retires)}
+❌ **Échecs :** {len(echecs)}
+
+**Détails des retraits :**
+"""
+        for m in retires[:15]:
+            rapport += f"\n• `{m['id']}` | {m['name'][:20]} | *{m['raison']}*"
+        
+        if len(retires) > 15:
+            rapport += f"\n... et {len(retires) - 15} autres"
+        
+        if echecs:
+            rapport += "\n\n**Échecs :**"
+            for m in echecs[:5]:
+                rapport += f"\n• `{m['id']}` | {m['name'][:20]}"
+        
+        await event.respond(rapport)
         
     except Exception as e:
-        logger.error(f"Erreur retrait {user_id}: {e}")
-        await event.answer(f"❌ Erreur: {e}", alert=True)
+        logger.error(f"Erreur scanretire: {e}")
+        await event.respond(f"""
+❌ **Erreur :** `{e}`
 
-@client.on(events.CallbackQuery(pattern=r'skip_(\d+)'))
-async def callback_skip(event):
-    """Callback pour passer au suivant"""
-    if event.sender_id != ADMIN_ID:
-        return
-    
-    user_id = int(event.pattern_match.group(1))
-    
-    await event.edit(f"""
-⏭️ **PASSÉ**
-
-🆔 `{user_id}`
-👤 {pending_removals.get(user_id, {}).get('name', 'Inconnu')}
-
-*Conservé dans le canal*
+🔧 **Vérifiez :**
+• Le bot est admin du canal
+• L'ID est correct : `/showids`
+• Le bot a accès au canal
 """)
-    
-    await event.answer("⏭️ Passé", alert=True)
 
 @client.on(events.NewMessage(pattern='/monitor'))
 async def cmd_monitor(event):
@@ -1420,7 +1535,6 @@ async def cmd_extend(event):
         
         user = get_user(target_id)
         
-        # Réinitialiser notification d'expiration si extension
         uid_str = str(target_id)
         if uid_str in expired_notified:
             del expired_notified[uid_str]
@@ -1470,6 +1584,7 @@ async def cmd_extend(event):
 
 @client.on(events.NewMessage(pattern=r'^/retirer(\s+\d+)?$'))
 async def cmd_retirer(event):
+    """Retire immédiatement un utilisateur des canaux"""
     if event.sender_id != ADMIN_ID:
         return
     
@@ -1483,8 +1598,8 @@ async def cmd_retirer(event):
 
 ⚠️ *L'utilisateur sera immédiatement :*
 • ❌ Expulsé du canal VIP
-• 🚫 Banni temporairement
-• 📵 Accès révoqué
+• 🚫 Retiré du canal prédiction (si différent)
+• 📵 Accès révoqué dans la base
 
 💡 Trouvez l'ID avec `/users` ou `/scan`
 """)
@@ -1495,26 +1610,27 @@ async def cmd_retirer(event):
         target_str = str(target_id)
         
         user = get_user(target_id)
+        vip_id = get_vip_channel_id()
+        pred_id = get_prediction_channel_id()
         
-        # Retirer des deux canaux
+        results = []
+        
+        # 1. Retirer du canal VIP
         try:
-            vip_entity = await client.get_input_entity(get_vip_channel_id())
-            await client.kick_participant(vip_entity, target_id)
-            await client(EditBannedRequest(
-                channel=vip_entity, participant=target_id,
-                banned_rights=ChatBannedRights(until_date=None, view_messages=False)
-            ))
+            success = await remove_user_from_channel(vip_id, target_id)
+            results.append(f"{'✅' if success else '❌'} Canal VIP")
         except Exception as e:
-            logger.error(f"Erreur kick VIP {target_id}: {e}")
+            results.append(f"❌ Canal VIP: {e}")
         
-        try:
-            pred_id = get_prediction_channel_id()
-            if pred_id != get_vip_channel_id():
-                pred_entity = await client.get_input_entity(pred_id)
-                await client.kick_participant(pred_entity, target_id)
-        except Exception as e:
-            logger.error(f"Erreur kick prédiction {target_id}: {e}")
+        # 2. Retirer du canal prédiction (si différent)
+        if pred_id != vip_id:
+            try:
+                success = await remove_user_from_channel(pred_id, target_id)
+                results.append(f"{'✅' if success else '❌'} Canal Prédiction")
+            except Exception as e:
+                results.append(f"❌ Canal Prédiction: {e}")
         
+        # 3. Mettre à jour la base
         update_user(target_id, {
             'vip_expires_at': None,
             'subscription_end': None,
@@ -1522,11 +1638,14 @@ async def cmd_retirer(event):
             'trial_used': True
         })
         
+        # 4. Supprimer des paiements validés
         if target_str in validated_payments:
             del validated_payments[target_str]
             save_json(VALIDATED_PAYMENTS_FILE, validated_payments)
         
-        await client.send_message(target_id, """
+        # 5. Notifier l'utilisateur
+        try:
+            await client.send_message(target_id, """
 ⛔ **ACCÈS RÉVOQUÉ** ⛔
 
 *Votre abonnement a été résilié par l'administrateur.*
@@ -1534,6 +1653,8 @@ async def cmd_retirer(event):
 📞 **Pour plus d'informations :**
 @Kouamappoloak
 """)
+        except:
+            pass
         
         await event.respond(f"""
 ✅ **EXPULSION RÉUSSIE**
@@ -1541,13 +1662,65 @@ async def cmd_retirer(event):
 🆔 `{target_id}`
 👤 {user.get('prenom', '')} {user.get('nom', '')}
 
-🚫 *L'utilisateur a été retiré des canaux VIP et prédiction.*
+**Actions effectuées :**
+{chr(10).join(results)}
+🗑️ Base de données mise à jour
+📨 Notification envoyée
 """)
         
     except ValueError:
         await event.respond("❌ *ID invalide*")
     except Exception as e:
         await event.respond(f"❌ *Erreur :* `{e}`")
+
+@client.on(events.NewMessage(pattern=r'^/remove(\s+\d+)?$'))
+async def cmd_remove_user(event):
+    """Retire un utilisateur du système (sans expulser des canaux)"""
+    if event.sender_id != ADMIN_ID:
+        return
+    
+    parts = event.message.message.strip().split()
+    
+    if len(parts) < 2:
+        await event.respond("""
+🗑️ **RETIRER DU SYSTÈME**
+
+**Usage :** `/remove ID_UTILISATEUR`
+
+⚠️ *Cette commande supprime uniquement les données de l'utilisateur de la base, sans l'expulser des canaux.*
+
+💡 Pour expulser des canaux, utilisez `/retirer ID`
+""")
+        return
+    
+    try:
+        target_user_id = int(parts[1])
+        target_str = str(target_user_id)
+        
+        user = get_user(target_user_id)
+        
+        # Retirer des données utilisateurs
+        if target_str in users_data:
+            del users_data[target_str]
+            save_json(USERS_FILE, users_data)
+        
+        # Optionnel: Retirer des canaux aussi si vous voulez
+        # await remove_user_from_channel(get_vip_channel_id(), target_user_id)
+        
+        await event.respond(f"""
+✅ **UTILISATEUR RETIRÉ DU SYSTÈME**
+
+🆔 `{target_user_id}`
+👤 {user.get('prenom', '')} {user.get('nom', '')}
+
+🗑️ Données supprimées de la base.
+
+💡 *L'utilisateur n'a pas été expulsé des canaux. Utilisez `/retirer {target_user_id}` pour l'expulser.*
+""")
+        logger.info(f"Admin a retiré l'utilisateur {target_user_id} du système")
+        
+    except Exception as e:
+        await event.respond(f"❌ Erreur: {e}")
 
 @client.on(events.NewMessage(pattern=r'^/setviplink(\s+.+)?$'))
 async def cmd_setviplink(event):
