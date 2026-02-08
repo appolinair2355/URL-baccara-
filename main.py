@@ -7,8 +7,8 @@ import json
 from datetime import datetime, timedelta, timezone
 from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
-from telethon.tl.functions.channels import EditBannedRequest
-from telethon.tl.types import ChatBannedRights
+from telethon.tl.functions.channels import EditBannedRequest, GetParticipantsRequest
+from telethon.tl.types import ChatBannedRights, ChannelParticipantsSearch
 from aiohttp import web
 from PIL import Image
 from io import BytesIO
@@ -16,57 +16,50 @@ import requests
 import base64
 
 # ============================================================
-# CONFIGURATION - Variables d'environnement pour Render
+# CONFIGURATION
 # ============================================================
 
-# API Telegram
 API_ID = int(os.getenv('API_ID', '29177661'))
 API_HASH = os.getenv('API_HASH', 'a8639172fa8d35dbfd8ea46286d349ab')
 BOT_TOKEN = os.getenv('BOT_TOKEN', '8442253971:AAEisYucgZ49Ej2b-mK9_6DhNrqh9WOc_XU')
 ADMIN_ID = int(os.getenv('ADMIN_ID', '1190237801'))
 
-# Configuration Render - CORRIGÉ : utiliser ./data au lieu de /data
 PORT = int(os.getenv('PORT', '10000'))
 RENDER_DEPLOYMENT = os.getenv('RENDER_DEPLOYMENT', 'true').lower() == 'true'
 TELEGRAM_SESSION = os.getenv('TELEGRAM_SESSION', '')
 
-# Dossier de données - CORRIGÉ : chemin relatif obligatoire sur Render
 DATA_DIR = os.getenv('DATA_DIR', './data')
 
-# Créer le dossier de données avec gestion d'erreur
 try:
     if not os.path.exists(DATA_DIR):
         os.makedirs(DATA_DIR, exist_ok=True)
         print(f"✅ Dossier créé : {DATA_DIR}")
-except PermissionError as e:
+except PermissionError:
     print(f"⚠️ Permission refusée pour {DATA_DIR}, utilisation de ./data")
     DATA_DIR = './data'
     os.makedirs(DATA_DIR, exist_ok=True)
 except Exception as e:
-    print(f"⚠️ Erreur création dossier : {e}, utilisation de ./data")
+    print(f"⚠️ Erreur : {e}, utilisation de ./data")
     DATA_DIR = './data'
     os.makedirs(DATA_DIR, exist_ok=True)
 
-# Fichiers de données
 USERS_FILE = os.path.join(DATA_DIR, 'users_data.json')
 CHANNELS_CONFIG_FILE = os.path.join(DATA_DIR, 'channels_config.json')
 TRIAL_CONFIG_FILE = os.path.join(DATA_DIR, 'trial_config.json')
 OCR_DATA_FILE = os.path.join(DATA_DIR, 'ocr_data.json')
 VALIDATED_PAYMENTS_FILE = os.path.join(DATA_DIR, 'validated_payments.json')
+EXPIRED_NOTIFIED_FILE = os.path.join(DATA_DIR, 'expired_notified.json')  # Nouveau
 
-# Configuration OCR & Paiement
 OCR_API_KEY = os.getenv('OCR_API_KEY', 'K86527928888957')
 PAYMENT_LINK = os.getenv('PAYMENT_LINK', 'https://my.moneyfusion.net/6977f7502181d4ebf722398d')
 BASE_MONTANT = int(os.getenv('BASE_MONTANT', '205'))
 BASE_MINUTES = int(os.getenv('BASE_MINUTES', '1440'))
 
-# Configuration Canaux par défaut
 DEFAULT_SOURCE_CHANNEL_ID = int(os.getenv('DEFAULT_SOURCE_CHANNEL_ID', '-1002682552255'))
 DEFAULT_PREDICTION_CHANNEL_ID = int(os.getenv('DEFAULT_PREDICTION_CHANNEL_ID', '-1003329818758'))
 DEFAULT_VIP_CHANNEL_ID = int(os.getenv('DEFAULT_VIP_CHANNEL_ID', '-1003329818758'))
 DEFAULT_VIP_CHANNEL_LINK = os.getenv('DEFAULT_VIP_CHANNEL_LINK', 'https://t.me/+s3y7GejUVHU0YjE0')
 
-# Essai gratuit
 DEFAULT_TRIAL_DURATION = int(os.getenv('TRIAL_DURATION_MINUTES', '15'))
 
 # ============================================================
@@ -80,7 +73,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Vérification configuration
 if not API_ID or API_ID == 0:
     logger.error("❌ API_ID manquant")
     exit(1)
@@ -91,7 +83,6 @@ if not BOT_TOKEN:
     logger.error("❌ BOT_TOKEN manquant")
     exit(1)
 
-# Initialisation client Telethon
 client = TelegramClient(StringSession(TELEGRAM_SESSION), API_ID, API_HASH)
 
 # ============================================================
@@ -105,18 +96,16 @@ channels_config = {
     'vip_channel_link': DEFAULT_VIP_CHANNEL_LINK
 }
 
-trial_config = {
-    'duration_minutes': DEFAULT_TRIAL_DURATION
-}
-
+trial_config = {'duration_minutes': DEFAULT_TRIAL_DURATION}
 users_data = {}
 ocr_data = {"paiements": {}, "references": {}, "factures": {}}
 validated_payments = {}
+expired_notified = {}  # Pour éviter les notifications multiples
 
-# États
 user_conversation_state = {}
 user_ocr_state = {}
 watch_state = {}
+pending_removals = {}
 
 # ============================================================
 # FONCTIONS UTILITAIRES
@@ -133,23 +122,22 @@ def load_json(file_path, default=None):
 
 def save_json(file_path, data):
     try:
-        # S'assurer que le dossier existe
         dir_path = os.path.dirname(file_path)
         if dir_path and not os.path.exists(dir_path):
             os.makedirs(dir_path, exist_ok=True)
-        
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.error(f"Erreur sauvegarde {file_path}: {e}")
 
 def load_all_configs():
-    global channels_config, trial_config, users_data, ocr_data, validated_payments
+    global channels_config, trial_config, users_data, ocr_data, validated_payments, expired_notified
     channels_config.update(load_json(CHANNELS_CONFIG_FILE, channels_config))
     trial_config.update(load_json(TRIAL_CONFIG_FILE, trial_config))
     users_data.update(load_json(USERS_FILE, {}))
     ocr_data.update(load_json(OCR_DATA_FILE, ocr_data))
     validated_payments.update(load_json(VALIDATED_PAYMENTS_FILE, {}))
+    expired_notified.update(load_json(EXPIRED_NOTIFIED_FILE, {}))
     logger.info("✅ Configurations chargées")
 
 def save_all_configs():
@@ -158,10 +146,7 @@ def save_all_configs():
     save_json(USERS_FILE, users_data)
     save_json(OCR_DATA_FILE, ocr_data)
     save_json(VALIDATED_PAYMENTS_FILE, validated_payments)
-
-# ============================================================
-# GESTION CANAUX
-# ============================================================
+    save_json(EXPIRED_NOTIFIED_FILE, expired_notified)
 
 def get_vip_channel_id():
     return channels_config.get('vip_channel_id', DEFAULT_VIP_CHANNEL_ID)
@@ -171,10 +156,6 @@ def get_vip_channel_link():
 
 def get_prediction_channel_id():
     return channels_config.get('prediction_channel_id', DEFAULT_PREDICTION_CHANNEL_ID)
-
-# ============================================================
-# GESTION UTILISATEURS
-# ============================================================
 
 def get_user(user_id: int) -> dict:
     user_id_str = str(user_id)
@@ -237,6 +218,21 @@ def format_time_remaining(expiry_iso: str) -> str:
     except:
         return "❓ Inconnu"
 
+def format_seconds(seconds: int) -> str:
+    if seconds <= 0:
+        return "⛔ Expiré"
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+    parts = []
+    if hours > 0:
+        parts.append(f"{hours}h")
+    if minutes > 0:
+        parts.append(f"{minutes}m")
+    if secs > 0 and hours == 0:
+        parts.append(f"{secs}s")
+    return " ".join(parts) if parts else "⏳ Quelques secondes"
+
 def parse_duration(input_str: str) -> int:
     input_str = input_str.strip().lower()
     if input_str.isdigit():
@@ -259,11 +255,7 @@ def parse_duration(input_str: str) -> int:
 
 async def ocr_space_api(image_bytes):
     url = "https://api.ocr.space/parse/image"
-    payload = {
-        'apikey': OCR_API_KEY,
-        'language': 'fre',
-        'isOverlayRequired': False
-    }
+    payload = {'apikey': OCR_API_KEY, 'language': 'fre', 'isOverlayRequired': False}
     files = {'image': ('image.jpg', image_bytes)}
     try:
         response = requests.post(url, data=payload, files=files, timeout=30)
@@ -335,7 +327,7 @@ def verifier_doublon(reference, facture):
     return doublons
 
 # ============================================================
-# GESTION VIP
+# GESTION VIP - CORRIGÉE AVEC RETRAIT AUTO ET NOTIFICATION
 # ============================================================
 
 async def delete_message_after_delay(chat_id: int, message_id: int, delay_seconds: int):
@@ -352,6 +344,12 @@ async def add_user_to_vip(user_id: int, duration_minutes: int, is_trial: bool = 
     try:
         now = datetime.now()
         expires_at = now + timedelta(minutes=duration_minutes)
+        
+        # Réinitialiser la notification d'expiration si réabonnement
+        uid_str = str(user_id)
+        if uid_str in expired_notified:
+            del expired_notified[uid_str]
+            save_json(EXPIRED_NOTIFIED_FILE, expired_notified)
         
         update_data = {
             'vip_joined_at': now.isoformat(),
@@ -421,7 +419,8 @@ async def add_user_to_vip(user_id: int, duration_minutes: int, is_trial: bool = 
 📅 Expire : {expires_at.strftime('%d/%m/%Y %H:%M')}
 """)
         
-        asyncio.create_task(auto_kick_user(user_id, duration_minutes * 60))
+        # Programmer l'expulsion et la notification
+        asyncio.create_task(auto_kick_and_notify(user_id, duration_minutes * 60))
         return True
         
     except Exception as e:
@@ -432,6 +431,12 @@ async def extend_or_add_vip(user_id: int, additional_minutes: int, payment_info:
     try:
         user = get_user(user_id)
         now = datetime.now()
+        
+        # Réinitialiser notification si réabonnement
+        uid_str = str(user_id)
+        if uid_str in expired_notified:
+            del expired_notified[uid_str]
+            save_json(EXPIRED_NOTIFIED_FILE, expired_notified)
         
         if is_user_subscribed(user_id) or is_trial_active(user_id):
             current_end = datetime.fromisoformat(user.get('subscription_end') or user.get('vip_expires_at'))
@@ -509,7 +514,7 @@ async def extend_or_add_vip(user_id: int, additional_minutes: int, payment_info:
         await client.send_message(ADMIN_ID, admin_msg)
         
         remaining_seconds = int((new_end - now).total_seconds())
-        asyncio.create_task(auto_kick_user(user_id, remaining_seconds))
+        asyncio.create_task(auto_kick_and_notify(user_id, remaining_seconds))
         return True
         
     except Exception as e:
@@ -517,58 +522,109 @@ async def extend_or_add_vip(user_id: int, additional_minutes: int, payment_info:
         await client.send_message(user_id, "❌ Erreur lors de l'activation. Contactez @Kouamappoloak")
         return False
 
-async def auto_kick_user(user_id: int, delay_seconds: int):
+async def auto_kick_and_notify(user_id: int, delay_seconds: int):
+    """
+    NOUVEAU : Attend l'expiration, retire des canaux, notifie user et admin
+    """
     if user_id == ADMIN_ID:
         return
     
+    # Attendre l'expiration
     await asyncio.sleep(delay_seconds)
     
     try:
-        if is_user_subscribed(user_id):
-            logger.info(f"Utilisateur {user_id} a renouvelé, annulation expulsion")
+        # Vérifier si l'utilisateur a renouvelé entre-temps
+        if is_user_subscribed(user_id) or is_trial_active(user_id):
+            logger.info(f"✅ Utilisateur {user_id} a renouvelé, annulation expulsion")
             return
         
         user = get_user(user_id)
-        entity = await client.get_input_entity(get_vip_channel_id())
+        uid_str = str(user_id)
         
-        await client.kick_participant(entity, user_id)
-        await client(EditBannedRequest(
-            channel=entity, participant=user_id,
-            banned_rights=ChatBannedRights(until_date=None, view_messages=False)
-        ))
+        # Vérifier si déjà notifié pour éviter les doublons
+        already_notified = expired_notified.get(uid_str, False)
         
+        # 1. RETIRER DU CANAL VIP
+        try:
+            vip_entity = await client.get_input_entity(get_vip_channel_id())
+            await client.kick_participant(vip_entity, user_id)
+            await client(EditBannedRequest(
+                channel=vip_entity, participant=user_id,
+                banned_rights=ChatBannedRights(until_date=None, view_messages=False)
+            ))
+            logger.info(f"🚫 Utilisateur {user_id} retiré du canal VIP")
+        except Exception as e:
+            logger.error(f"Erreur retrait VIP {user_id}: {e}")
+        
+        # 2. RETIRER DU CANAL PRÉDICTION (si différent)
+        try:
+            pred_id = get_prediction_channel_id()
+            if pred_id != get_vip_channel_id():
+                pred_entity = await client.get_input_entity(pred_id)
+                await client.kick_participant(pred_entity, user_id)
+                logger.info(f"🚫 Utilisateur {user_id} retiré du canal prédiction")
+        except Exception as e:
+            logger.error(f"Erreur retrait prédiction {user_id}: {e}")
+        
+        # 3. METTRE À JOUR LA BASE
         update_user(user_id, {
-            'vip_expires_at': None, 'subscription_end': None,
-            'is_in_channel': False, 'trial_used': True
+            'vip_expires_at': None,
+            'subscription_end': None,
+            'is_in_channel': False,
+            'trial_used': True
         })
         
-        await client.send_message(user_id, f"""
-😢 **VOTRE AVENTURE S'ARRÊTE ICI...** 😢
+        # 4. NOTIFIER L'UTILISATEUR (seulement si pas déjà notifié)
+        if not already_notified:
+            await client.send_message(user_id, f"""
+😢 **VOTRE ACCÈS EST TERMINÉ** 😢
 
-⏰ *Votre accès VIP est malheureusement terminé.*
+⏰ *Votre abonnement VIP a expiré.*
 
-💔 *Nous espérons vous revoir très bientôt !*
+💔 *Nous espérons que vous avez apprécié l'expérience !*
 
-💳 **Pour réactiver votre accès :**
-👉 Tapez /payer
+💎 **Vous voulez continuer l'aventure ?**
 
-🌟 *Rejoignez-nous à nouveau et retrouvez l'excitation !*
+💳 **Renouvelez votre abonnement :**
+👉 Tapez `/payer`
+
+🌟 *Ne manquez pas les prochaines opportunités !*
 
 📞 **Besoin d'aide ?** @Kouamappoloak
 """)
+            
+            # Marquer comme notifié
+            expired_notified[uid_str] = {
+                'date': datetime.now().isoformat(),
+                'type': 'expired'
+            }
+            save_json(EXPIRED_NOTIFIED_FILE, expired_notified)
+        
+        # 5. NOTIFIER L'ADMIN (toujours, mais avec indication si déjà notifié)
+        notif_status = "🔔 Nouvelle expiration" if not already_notified else "📝 Déjà notifié précédemment"
         
         await client.send_message(ADMIN_ID, f"""
-🚫 **UTILISATEUR RETIRÉ**
+🚫 **UTILISATEUR EXPIRÉ ET RETIRÉ**
+
+{notif_status}
 
 🆔 `{user_id}`
 👤 {user.get('prenom', '')} {user.get('nom', '')}
-⏰ Expiration naturelle
+🌍 {user.get('pays', 'N/A')}
+
+✅ Actions effectuées :
+• ❌ Retiré du canal VIP
+• ❌ Retiré du canal prédiction
+• 📝 Base de données mise à jour
+• 🔔 Notification envoyée à l'utilisateur
+
+💡 `/retirer {user_id}` si besoin de vérifier
 """)
         
-        logger.info(f"🚫 Utilisateur {user_id} expulsé")
+        logger.info(f"✅ Expiration traitée pour {user_id}")
         
     except Exception as e:
-        logger.error(f"Erreur expulsion {user_id}: {e}")
+        logger.error(f"❌ Erreur traitement expiration {user_id}: {e}")
 
 # ============================================================
 # COMMANDES UTILISATEURS
@@ -590,6 +646,9 @@ async def cmd_start(event):
 📋 **VOS POUVOIRS :**
 
 👥 `/users` - Voir tous les sujets
+➕ `/adduser` - Ajouter manuellement un utilisateur
+🔍 `/scan` - Scanner canal VIP (tous les IDs)
+🧹 `/scanretire` - Scanner et retirer non-inscrits
 ⏱️ `/monitor` - Surveillance active
 👁️ `/watch` - Mode espion temps réel
 ⏫ `/extend ID durée` - Accorder du temps
@@ -666,6 +725,9 @@ async def cmd_help(event):
 
 **Gestion des sujets :**
 `/users` - Liste complète avec statuts
+`/adduser` - Ajouter un utilisateur manuellement
+`/scan` - Scanner tous les membres du canal VIP
+`/scanretire` - Scanner et retirer les non-inscrits
 `/monitor` - Utilisateurs actifs uniquement
 `/watch` - Surveillance automatique (30s)
 `/stopwatch` - Arrêter surveillance
@@ -701,7 +763,7 @@ async def cmd_help(event):
 1️⃣ Tapez `/payer`
 2️⃣ Cliquez sur **PAYER MAINTENANT**
 3️⃣ Payez sur le site sécurisé
-4️⃣ Revenez ici et cliquez **J'AI DÉJÀ PAYÉ**
+4️⃣ Revenez et cliquez **J'AI DÉJÀ PAYÉ**
 5️⃣ Envoyez votre capture d'écran
 6️⃣ ✅ Recevez votre lien VIP instantanément !
 
@@ -848,37 +910,394 @@ async def cmd_status(event):
 
 @client.on(events.NewMessage(pattern='/users'))
 async def cmd_users(event):
+    """Affiche TOUS les utilisateurs avec ID, nom, pays, statut, temps"""
     if event.sender_id != ADMIN_ID:
         return
     
+    global users_data
+    users_data = load_json(USERS_FILE, {})
+    
     if not users_data:
-        await event.respond("📭 *Aucun utilisateur enregistré*")
+        await event.respond("📭 *Aucun utilisateur enregistré dans la base*")
         return
     
-    lines = []
+    all_users = []
     for uid_str, info in users_data.items():
-        uid = int(uid_str)
-        if uid == ADMIN_ID:
-            continue
+        try:
+            uid = int(uid_str)
+            if uid == ADMIN_ID:
+                continue
             
-        status = "🟢" if is_user_subscribed(uid) else "🟡" if is_trial_active(uid) else "🔴"
-        name = f"{info.get('prenom', '')} {info.get('nom', '')}".strip() or "Anonyme"
-        
-        lines.append(f"{status} `{uid}` | {name[:20]:<20} | {get_remaining_time(uid)}")
+            if is_user_subscribed(uid):
+                status = "🟢 ABONNÉ"
+                time_remaining = format_time_remaining(info.get('subscription_end', ''))
+            elif is_trial_active(uid):
+                status = "🟡 ESSAI"
+                trial_end = datetime.fromisoformat(info.get('trial_joined_at')) + timedelta(minutes=trial_config['duration_minutes'])
+                remaining = int((trial_end - datetime.now()).total_seconds())
+                time_remaining = format_seconds(remaining)
+            else:
+                status = "🔴 INACTIF"
+                time_remaining = "⛔ Expiré"
+            
+            prenom = info.get('prenom') or 'N/A'
+            nom = info.get('nom') or 'N/A'
+            pays = info.get('pays') or 'N/A'
+            full_name = f"{prenom} {nom}".strip()
+            
+            all_users.append({
+                'uid': uid,
+                'name': full_name,
+                'pays': pays,
+                'status': status,
+                'time': time_remaining,
+                'total': info.get('total_time_added', 0),
+                'registered': info.get('registered', False)
+            })
+        except Exception as e:
+            logger.error(f"Erreur traitement user {uid_str}: {e}")
+            continue
     
-    if not lines:
-        await event.respond("📭 *Aucun utilisateur*")
+    if not all_users:
+        await event.respond("📭 *Aucun utilisateur trouvé dans la base*")
         return
     
-    for i in range(0, len(lines), 50):
-        chunk = lines[i:i+50]
-        header = f"""
-📋 **RÉPERTOIRE DES MEMBRES**
-*Total : {len(lines)} utilisateurs*
-
-"""
-        await event.respond(header + "\n".join(chunk))
+    all_users.sort(key=lambda x: (0 if 'ABONNÉ' in x['status'] else 1 if 'ESSAI' in x['status'] else 2, x['name']))
+    
+    total = len(all_users)
+    for i in range(0, total, 5):
+        chunk = all_users[i:i+5]
+        
+        lines = [f"📋 **UTILISATEURS ({i+1}-{min(i+len(chunk), total)}/{total})**\n"]
+        
+        for u in chunk:
+            lines.append(f"""
+{'─' * 45}
+🆔 **ID :** `{u['uid']}`
+👤 **Nom :** {u['name']}
+🌍 **Pays :** {u['pays']}
+📊 **Statut :** {u['status']}
+⏳ **Temps restant :** {u['time']}
+📈 **Total cumulé :** {u['total']:,} min
+{'─' * 45}""")
+        
+        await event.respond("\n".join(lines))
         await asyncio.sleep(0.3)
+
+@client.on(events.NewMessage(pattern=r'^/adduser(\s+.+)?$'))
+async def cmd_adduser(event):
+    """Ajoute manuellement un utilisateur à la base"""
+    if event.sender_id != ADMIN_ID:
+        return
+    
+    # Format: /adduser ID NOM PRENOM PAYS [DUREE_MINUTES]
+    parts = event.message.message.strip().split()
+    
+    if len(parts) < 5:
+        await event.respond("""
+➕ **AJOUTER UN UTILISATEUR**
+
+**Usage :** `/adduser ID NOM PRENOM PAYS [DUREE]`
+
+**Exemples :**
+• `/adduser 123456789 KOUAME SOSSOU "COTE D'IVOIRE"` → Ajoute sans abonnement
+• `/adduser 123456789 KOUAME SOSSOU "COTE D'IVOIRE" 1440` → Ajoute avec 24h
+
+**Paramètres :**
+• `ID` : ID Telegram de l'utilisateur (chiffres)
+• `NOM` : Nom de famille
+• `PRENOM` : Prénom
+• `PAYS` : Pays (mettre entre guillemets si espace)
+• `DUREE` : Optionnel, minutes d'abonnement (ex: 1440 = 24h)
+
+💡 *L'utilisateur sera enregistré mais devra payer pour activer son accès (sauf si durée précisée)*
+""")
+        return
+    
+    try:
+        target_id = int(parts[1])
+        nom = parts[2]
+        prenom = parts[3]
+        pays = parts[4]
+        duree = int(parts[5]) if len(parts) > 5 else 0
+        
+        uid_str = str(target_id)
+        
+        # Vérifier si existe déjà
+        if uid_str in users_data and users_data[uid_str].get('registered'):
+            await event.respond(f"""
+⚠️ **UTILISATEUR EXISTANT**
+
+🆔 `{target_id}` est déjà dans la base.
+
+💡 Utilisez `/extend {target_id} 60` pour ajouter du temps.
+""")
+            return
+        
+        # Créer l'utilisateur
+        now = datetime.now()
+        user_data = {
+            'registered': True,
+            'nom': nom,
+            'prenom': prenom,
+            'pays': pays,
+            'trial_used': duree > 0,  # Si durée > 0, considéré comme payé
+            'total_time_added': duree,
+            'added_manually': True,
+            'added_date': now.isoformat()
+        }
+        
+        # Si durée précisée, activer l'abonnement
+        if duree > 0:
+            expires_at = now + timedelta(minutes=duree)
+            user_data['subscription_end'] = expires_at.isoformat()
+            user_data['vip_expires_at'] = expires_at.isoformat()
+            user_data['is_in_channel'] = True
+        
+        update_user(target_id, user_data)
+        
+        # Message de confirmation
+        if duree > 0:
+            time_str = format_time_remaining(user_data['subscription_end'])
+            await event.respond(f"""
+✅ **UTILISATEUR AJOUTÉ ET ACTIVÉ**
+
+🆔 **ID :** `{target_id}`
+👤 **Nom :** {prenom} {nom}
+🌍 **Pays :** {pays}
+⏱️ **Durée :** {duree} minutes ({time_str})
+📅 **Expire le :** {expires_at.strftime('%d/%m/%Y à %H:%M')}
+
+🔗 **Lien VIP envoyé automatiquement à l'utilisateur**
+""")
+            # Envoyer le lien VIP
+            await add_user_to_vip(target_id, duree, is_trial=False)
+        else:
+            await event.respond(f"""
+✅ **UTILISATEUR AJOUTÉ**
+
+🆔 **ID :** `{target_id}`
+👤 **Nom :** {prenom} {nom}
+🌍 **Pays :** {pays}
+📊 **Statut :** Enregistré (sans abonnement)
+
+💡 L'utilisateur doit utiliser `/payer` pour activer son accès.
+""")
+        
+    except ValueError as e:
+        await event.respond(f"❌ **Erreur de format :** `{e}`\n\nVérifiez que l'ID est un nombre.")
+    except Exception as e:
+        await event.respond(f"❌ **Erreur :** `{e}`")
+
+@client.on(events.NewMessage(pattern='/scan'))
+async def cmd_scan(event):
+    """Scanne le canal VIP et affiche TOUS les membres"""
+    if event.sender_id != ADMIN_ID:
+        return
+    
+    await event.respond("🔍 **SCAN EN COURS...**\n\n⏳ Récupération des membres du canal VIP...")
+    
+    try:
+        vip_id = get_vip_channel_id()
+        entity = await client.get_input_entity(vip_id)
+        
+        participants = []
+        async for user in client.iter_participants(entity):
+            if user.id == ADMIN_ID:
+                continue
+            participants.append({
+                'id': user.id,
+                'username': user.username or 'N/A',
+                'first_name': user.first_name or '',
+                'last_name': user.last_name or '',
+                'full_name': f"{user.first_name or ''} {user.last_name or ''}".strip() or 'Anonyme'
+            })
+        
+        if not participants:
+            await event.respond("📭 *Aucun membre trouvé dans le canal VIP*")
+            return
+        
+        inscrits = []
+        non_inscrits = []
+        expires_soon = []
+        
+        for p in participants:
+            uid_str = str(p['id'])
+            if uid_str in users_data:
+                user_info = users_data[uid_str]
+                if is_user_subscribed(p['id']):
+                    time_left = format_time_remaining(user_info.get('subscription_end', ''))
+                    inscrits.append({**p, 'time': time_left, 'status': '✅ Actif'})
+                elif is_trial_active(p['id']):
+                    time_left = format_time_remaining(user_info.get('trial_joined_at', ''))
+                    inscrits.append({**p, 'time': time_left, 'status': '🎁 Essai'})
+                else:
+                    expires_soon.append({**p, 'status': '⛔ Expiré'})
+            else:
+                non_inscrits.append(p)
+        
+        summary = f"""
+📊 **RÉSULTAT DU SCAN**
+
+👥 **Total membres dans le canal :** {len(participants)}
+
+✅ **Inscrits actifs :** {len([x for x in inscrits if '✅' in x['status']])}
+🎁 **En essai :** {len([x for x in inscrits if '🎁' in x['status']])}
+⛔ **Inscrits mais expirés :** {len(expires_soon)}
+🔴 **Non inscrits (intrus) :** {len(non_inscrits)}
+
+💡 Utilisez `/scanretire` pour gérer les non-inscrits
+"""
+        await event.respond(summary)
+        
+        if non_inscrits:
+            lines = ["\n🔴 **MEMBRES NON INSCRITS (INTRUS) :**\n"]
+            for p in non_inscrits[:10]:
+                lines.append(f"🆔 `{p['id']}` | 👤 {p['full_name'][:20]} | @{p['username']}")
+            if len(non_inscrits) > 10:
+                lines.append(f"\n... et {len(non_inscrits) - 10} autres")
+            await event.respond("\n".join(lines))
+        
+        if expires_soon:
+            lines = ["\n⛔ **INSCRITS MAIS EXPIRÉS :**\n"]
+            for p in expires_soon[:5]:
+                lines.append(f"🆔 `{p['id']}` | 👤 {p['full_name'][:20]}")
+            await event.respond("\n".join(lines))
+            
+    except Exception as e:
+        logger.error(f"Erreur scan: {e}")
+        await event.respond(f"❌ **Erreur lors du scan :** `{e}`")
+
+@client.on(events.NewMessage(pattern='/scanretire'))
+async def cmd_scanretire(event):
+    """Scanne et propose de retirer les non-inscrits un par un"""
+    if event.sender_id != ADMIN_ID:
+        return
+    
+    await event.respond("🧹 **MODE NETTOYAGE**\n\n🔍 Scan du canal VIP en cours...")
+    
+    try:
+        vip_id = get_vip_channel_id()
+        entity = await client.get_input_entity(vip_id)
+        
+        intrus = []
+        async for user in client.iter_participants(entity):
+            if user.id == ADMIN_ID:
+                continue
+            
+            uid_str = str(user.id)
+            is_valid = False
+            if uid_str in users_data:
+                if is_user_subscribed(user.id) or is_trial_active(user.id):
+                    is_valid = True
+            
+            if not is_valid:
+                intrus.append({
+                    'id': user.id,
+                    'name': f"{user.first_name or ''} {user.last_name or ''}".strip() or 'Anonyme',
+                    'username': user.username or 'N/A'
+                })
+        
+        if not intrus:
+            await event.respond("✅ **AUCUN INTRUS TROUVÉ**\n\nTous les membres sont inscrits et actifs !")
+            return
+        
+        await event.respond(f"🔴 **{len(intrus)} INTRUS DÉTECTÉS**\n\nJe vais vous les présenter un par un avec option de retrait.")
+        
+        for i, intru in enumerate(intrus[:20], 1):
+            buttons = [
+                [Button.inline(f"🚫 RETIRER {intru['id']}", f"remove_{intru['id']}")],
+                [Button.inline("⏭️ SUIVANT", f"skip_{intru['id']}")]
+            ]
+            
+            msg = await event.respond(
+                f"""
+🔴 **INTRU #{i}/{len(intrus)}**
+
+🆔 **ID :** `{intru['id']}`
+👤 **Nom :** {intru['name']}
+📱 **Username :** @{intru['username']}
+
+⚠️ *Cet utilisateur n'est PAS inscrit dans la base ou a expiré*
+
+**Action requise :**
+""",
+                buttons=buttons
+            )
+            
+            pending_removals[intru['id']] = {
+                'message_id': msg.id,
+                'chat_id': event.chat_id,
+                'name': intru['name']
+            }
+            
+            await asyncio.sleep(0.5)
+        
+        if len(intrus) > 20:
+            await event.respond(f"⚠️ *{len(intrus) - 20} autres intrus non affichés. Relancez la commande après traitement.*")
+            
+    except Exception as e:
+        logger.error(f"Erreur scanretire: {e}")
+        await event.respond(f"❌ **Erreur :** `{e}`")
+
+@client.on(events.CallbackQuery(pattern=r'remove_(\d+)'))
+async def callback_remove(event):
+    """Callback pour retirer un intrus"""
+    if event.sender_id != ADMIN_ID:
+        await event.answer("⛔ Non autorisé", alert=True)
+        return
+    
+    user_id = int(event.pattern_match.group(1))
+    
+    try:
+        entity = await client.get_input_entity(get_vip_channel_id())
+        await client.kick_participant(entity, user_id)
+        await client(EditBannedRequest(
+            channel=entity, participant=user_id,
+            banned_rights=ChatBannedRights(until_date=None, view_messages=False)
+        ))
+        
+        uid_str = str(user_id)
+        if uid_str in users_data:
+            update_user(user_id, {
+                'vip_expires_at': None,
+                'subscription_end': None,
+                'is_in_channel': False
+            })
+        
+        await event.edit(f"""
+✅ **UTILISATEUR RETIRÉ**
+
+🆔 `{user_id}`
+👤 {pending_removals.get(user_id, {}).get('name', 'Inconnu')}
+
+🚫 *A été expulsé avec succès*
+""")
+        
+        await event.answer("✅ Retiré !", alert=True)
+        
+    except Exception as e:
+        logger.error(f"Erreur retrait {user_id}: {e}")
+        await event.answer(f"❌ Erreur: {e}", alert=True)
+
+@client.on(events.CallbackQuery(pattern=r'skip_(\d+)'))
+async def callback_skip(event):
+    """Callback pour passer au suivant"""
+    if event.sender_id != ADMIN_ID:
+        return
+    
+    user_id = int(event.pattern_match.group(1))
+    
+    await event.edit(f"""
+⏭️ **PASSÉ**
+
+🆔 `{user_id}`
+👤 {pending_removals.get(user_id, {}).get('name', 'Inconnu')}
+
+*Conservé dans le canal*
+""")
+    
+    await event.answer("⏭️ Passé", alert=True)
 
 @client.on(events.NewMessage(pattern='/monitor'))
 async def cmd_monitor(event):
@@ -887,12 +1306,15 @@ async def cmd_monitor(event):
     
     active = []
     for uid_str, info in users_data.items():
-        uid = int(uid_str)
-        if uid == ADMIN_ID:
+        try:
+            uid = int(uid_str)
+            if uid == ADMIN_ID:
+                continue
+            if is_user_subscribed(uid) or is_trial_active(uid):
+                name = f"{info.get('prenom', '')} {info.get('nom', '')}".strip() or "Anonyme"
+                active.append(f"🟢 `{uid}` | {name[:18]:<18} | {get_remaining_time(uid)}")
+        except:
             continue
-        if is_user_subscribed(uid) or is_trial_active(uid):
-            name = f"{info.get('prenom', '')} {info.get('nom', '')}".strip() or "Anonyme"
-            active.append(f"🟢 `{uid}` | {name[:18]:<18} | {get_remaining_time(uid)}")
     
     if not active:
         await event.respond("""
@@ -927,13 +1349,16 @@ async def watch_loop(admin_id):
             
             count = 0
             for uid_str, info in users_data.items():
-                uid = int(uid_str)
-                if uid == ADMIN_ID:
+                try:
+                    uid = int(uid_str)
+                    if uid == ADMIN_ID:
+                        continue
+                    if is_user_subscribed(uid) or is_trial_active(uid):
+                        count += 1
+                        name = f"{info.get('prenom', '')} {info.get('nom', '')}".strip() or "Anon"
+                        lines.append(f"🟢 `{uid}` | {name[:12]:<12} | {get_remaining_time(uid)}")
+                except:
                     continue
-                if is_user_subscribed(uid) or is_trial_active(uid):
-                    count += 1
-                    name = f"{info.get('prenom', '')} {info.get('nom', '')}".strip() or "Anon"
-                    lines.append(f"🟢 `{uid}` | {name[:12]:<12} | {get_remaining_time(uid)}")
             
             if count == 0:
                 lines.append("🔴 Aucun actif")
@@ -995,6 +1420,12 @@ async def cmd_extend(event):
         
         user = get_user(target_id)
         
+        # Réinitialiser notification d'expiration si extension
+        uid_str = str(target_id)
+        if uid_str in expired_notified:
+            del expired_notified[uid_str]
+            save_json(EXPIRED_NOTIFIED_FILE, expired_notified)
+        
         if is_user_subscribed(target_id) or is_trial_active(target_id):
             current_end = datetime.fromisoformat(user.get('subscription_end') or user.get('vip_expires_at'))
             new_end = current_end + timedelta(minutes=additional_minutes)
@@ -1030,7 +1461,7 @@ async def cmd_extend(event):
 """)
         
         remaining_seconds = int((new_end - datetime.now()).total_seconds())
-        asyncio.create_task(auto_kick_user(target_id, remaining_seconds))
+        asyncio.create_task(auto_kick_and_notify(target_id, remaining_seconds))
         
     except ValueError:
         await event.respond("❌ *ID invalide*")
@@ -1055,7 +1486,7 @@ async def cmd_retirer(event):
 • 🚫 Banni temporairement
 • 📵 Accès révoqué
 
-💡 Trouvez l'ID avec `/users`
+💡 Trouvez l'ID avec `/users` ou `/scan`
 """)
         return
     
@@ -1063,27 +1494,26 @@ async def cmd_retirer(event):
         target_id = int(parts[1])
         target_str = str(target_id)
         
-        if target_str not in users_data:
-            await event.respond(f"""
-❌ **UTILISATEUR INTROUVABLE**
-
-🆔 `{target_id}` n'existe pas.
-
-💡 Vérifiez avec `/users`
-""")
-            return
-        
         user = get_user(target_id)
         
+        # Retirer des deux canaux
         try:
-            entity = await client.get_input_entity(get_vip_channel_id())
-            await client.kick_participant(entity, target_id)
+            vip_entity = await client.get_input_entity(get_vip_channel_id())
+            await client.kick_participant(vip_entity, target_id)
             await client(EditBannedRequest(
-                channel=entity, participant=target_id,
+                channel=vip_entity, participant=target_id,
                 banned_rights=ChatBannedRights(until_date=None, view_messages=False)
             ))
         except Exception as e:
-            logger.error(f"Erreur kick {target_id}: {e}")
+            logger.error(f"Erreur kick VIP {target_id}: {e}")
+        
+        try:
+            pred_id = get_prediction_channel_id()
+            if pred_id != get_vip_channel_id():
+                pred_entity = await client.get_input_entity(pred_id)
+                await client.kick_participant(pred_entity, target_id)
+        except Exception as e:
+            logger.error(f"Erreur kick prédiction {target_id}: {e}")
         
         update_user(target_id, {
             'vip_expires_at': None,
@@ -1111,7 +1541,7 @@ async def cmd_retirer(event):
 🆔 `{target_id}`
 👤 {user.get('prenom', '')} {user.get('nom', '')}
 
-🚫 *L'utilisateur a été retiré avec succès.*
+🚫 *L'utilisateur a été retiré des canaux VIP et prédiction.*
 """)
         
     except ValueError:
@@ -1266,13 +1696,16 @@ async def cmd_validated(event):
     
     lines = []
     for uid, info in list(validated_payments.items())[:20]:
-        user = get_user(int(uid))
-        lines.append(f"""
+        try:
+            user = get_user(int(uid))
+            lines.append(f"""
 🆔 `{uid}`
 👤 {user.get('prenom', '')} {user.get('nom', '')}
 💰 {info.get('montant', 0):.0f} FCFA | ⏱️ {info.get('minutes', 0)} min
 📅 {info.get('date', 'N/A')[:10]}
 """)
+        except:
+            lines.append(f"🆔 `{uid}` - Erreur chargement")
     
     await event.respond(f"""
 ✅ **PAIEMENTS AUTO-VALIDÉS**
@@ -1376,12 +1809,10 @@ async def process_ocr_payment(event):
     user_id = event.sender_id
     username = event.sender.username or f"User_{user_id}"
     
-    # Télécharger l'image
     photo_bytes = BytesIO()
     await event.client.download_media(event.message.photo, photo_bytes)
     photo_bytes.seek(0)
     
-    # Analyse OCR
     await event.respond("🔍 *Analyse en cours...*")
     texte = await ocr_space_api(photo_bytes)
     
@@ -1400,7 +1831,6 @@ async def process_ocr_payment(event):
 """)
         return
     
-    # Extraction des données
     montant = extraire_montant(texte)
     reference = extraire_reference(texte)
     facture = extraire_numero_facture(texte)
@@ -1420,7 +1850,6 @@ async def process_ocr_payment(event):
 """)
         return
     
-    # Vérification anti-doublon
     doublons = verifier_doublon(reference, facture)
     
     if doublons:
@@ -1443,11 +1872,9 @@ async def process_ocr_payment(event):
 """)
         return
     
-    # ✅ Paiement conforme - Calcul et validation
     minutes = calculer_minutes(montant)
     duree = formater_duree(minutes)
     
-    # Sauvegarder dans OCR data
     if str(user_id) not in ocr_data["paiements"]:
         ocr_data["paiements"][str(user_id)] = []
     
@@ -1467,11 +1894,9 @@ async def process_ocr_payment(event):
     if facture:
         ocr_data["factures"][facture] = str(user_id)
     
-    # Sauvegarder dans validations
     validated_payments[str(user_id)] = paiement_info
     save_all_configs()
     
-    # Message de confirmation avec émotion
     vip_link = get_vip_channel_link()
     
     msg = await event.respond(f"""
@@ -1496,10 +1921,8 @@ async def process_ocr_payment(event):
 💎 *Bienvenue dans l'expérience VIP...*
 """)
     
-    # Supprimer le message après 30 secondes
     asyncio.create_task(delete_message_after_delay(user_id, msg.id, 30))
     
-    # Activer le VIP
     payment_data = {
         'montant': montant,
         'facture': facture or 'N/A',
