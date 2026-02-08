@@ -1,91 +1,163 @@
-"""
-Fichier de configuration centralisé
-Toutes les variables sont définies ici, mais peuvent être surchargées par les variables d'environnement
-"""
-
 import os
+from dotenv import load_dotenv
 
-# ==================== CONFIGURATION TELEGRAM ====================
-# Bot Token (depuis @BotFather)
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8442253971:AAEisYucgZ49Ej2b-mK9_6DhNrqh9WOc_XU")
+# Chargement des variables d'environnement (pour développement local)
+load_dotenv()
 
-# ID du canal/group où envoyer les prédictions
-CHANNEL_ID = os.getenv("CHANNEL_ID", "-1003846785063")
+# ============================================================
+# CONFIGURATION TELEGRAM API
+# ============================================================
 
-# Liste des IDs des administrateurs (séparés par virgule si plusieurs via env)
-DEFAULT_ADMIN_IDS = "1190237801"
-ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_IDS", DEFAULT_ADMIN_IDS).split(",")]
+# API Telegram (https://my.telegram.org)
+API_ID = int(os.getenv('API_ID', '29177661'))
+API_HASH = os.getenv('API_HASH', 'a8639172fa8d35dbfd8ea46286d349ab')
 
-# ==================== CONFIGURATION RENDER/SERVEUR ====================
-# Port d'écoute (Render définit cette variable automatiquement)
-PORT = int(os.getenv("PORT", "10000"))
+# Bot Token (de @BotFather)
+BOT_TOKEN = os.getenv('BOT_TOKEN', '8442253971:AAEisYucgZ49Ej2b-mK9_6DhNrqh9WOc_XU')
 
-# Host pour le serveur web
-HOST = os.getenv("HOST", "0.0.0.0")
+# ID Admin (votre ID Telegram)
+ADMIN_ID = int(os.getenv('ADMIN_ID', '1190237801'))
 
-# ==================== CONFIGURATION JEU ====================
-# Langue par défaut (fr ou tr)
-DEFAULT_LANGUAGE = os.getenv("DEFAULT_LANGUAGE", "fr")
+# ============================================================
+# CONFIGURATION RENDER.COM
+# ============================================================
 
-# Délai entre les vérifications (secondes)
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "30"))
+# Port (Render utilise 10000 par défaut)
+PORT = int(os.getenv('PORT', '10000'))
 
-# Délai entre les envois de messages (évite le flood)
-MESSAGE_DELAY = float(os.getenv("MESSAGE_DELAY", "0.5"))
+# Mode déploiement Render
+RENDER_DEPLOYMENT = os.getenv('RENDER_DEPLOYMENT', 'true').lower() == 'true'
 
-# ==================== CONFIGURATION STRATÉGIE ====================
-# Nombre de jeux à sauter après validation (min et max)
-SKIP_AFTER_WIN_MIN = int(os.getenv("SKIP_AFTER_WIN_MIN", "3"))
-SKIP_AFTER_WIN_MAX = int(os.getenv("SKIP_AFTER_WIN_MAX", "4"))
+# Session string pour Render (persistance connexion)
+TELEGRAM_SESSION = os.getenv('TELEGRAM_SESSION', '')
 
-# Nombre de rattrapages autorisés
-MAX_RETRIES = int(os.getenv("MAX_RETRIES", "2"))
+# ============================================================
+# CONFIGURATION WEBHOOK (optionnel pour Render)
+# ============================================================
 
-# ==================== CONFIGURATION API 1XBET ====================
-# URL de l'API
-API_URL = os.getenv("API_URL", "https://1xbet-new.com/LiveFeed/GetChampZip?champ=2050671")
+# URL de l'application Render (pour webhook)
+# Exemple: https://votre-bot.onrender.com
+WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')
 
-# Timeout pour les requêtes API (secondes)
-API_TIMEOUT = int(os.getenv("API_TIMEOUT", "30"))
+# Mode webhook ou polling
+USE_WEBHOOK = os.getenv('USE_WEBHOOK', 'false').lower() == 'true'
 
-# ==================== TRADUCTIONS ====================
-LANGUAGES = {"fr": "Français", "tr": "Türkçe"}
+# ============================================================
+# CONFIGURATION BASE DE DONNÉES (optionnel pour Render)
+# ============================================================
 
-TRANSLATIONS = {
-    "fr": {
-        "prediction": "<b>Prédiction</b> 🚩: {symbol}(Joueur)\nJeu 🏠: #N{game_number}\nRattrapage🛡: 2",
-        "bot_started": "✅ Le bot a démarré et est en ligne!",
-        "bot_already_started": "❌ Le bot est déjà démarré.",
-        "bot_stopped": "🛑 Le bot a été arrêté.",
-        "bot_already_stopped": "❌ Le bot est déjà arrêté.",
-        "no_permission": "⛔ Vous n'avez pas les permissions nécessaires.",
-        "prediction_validated": "✅ Prédiction validée au jeu #{game_number}",
-        "prediction_failed": "❌ Prédiction échouée",
-    },
-    "tr": {
-        "prediction": "<b>Tahmin</b> 🚩: {symbol}(Oyuncu)\nOda 🏠: #N{game_number}\nMartingale 🛡: 2",
-        "bot_started": "✅ Bot başladı ve çevrimiçi!",
-        "bot_already_started": "❌ Bot zaten çalışıyor.",
-        "bot_stopped": "🛑 Bot durduruldu.",
-        "bot_already_stopped": "❌ Bot zaten durdurulmuş.",
-        "no_permission": "⛔ Gerekli izinlere sahip değilsiniz.",
-        "prediction_validated": "✅ Tahmin #{game_number} oyununda doğrulandı",
-        "prediction_failed": "❌ Tahmin başarısız oldu",
-    }
-}
+# URL PostgreSQL (Render PostgreSQL)
+DATABASE_URL = os.getenv('DATABASE_URL', '')
 
-# ==================== FONCTIONS UTILITAIRES ====================
-def get_translation(key: str, lang: str = None) -> str:
-    """Récupère une traduction"""
-    if lang is None:
-        lang = DEFAULT_LANGUAGE
-    return TRANSLATIONS.get(lang, TRANSLATIONS["fr"]).get(key, key)
+# Mode persistence: 'json' (fichier) ou 'postgres' (base de données)
+PERSISTENCE_MODE = os.getenv('PERSISTENCE_MODE', 'json')
 
-def get_chat_ids() -> list:
-    """Retourne la liste des IDs de chat"""
-    return [CHANNEL_ID]
+# ============================================================
+# CONFIGURATION OCR & PAIEMENT
+# ============================================================
 
-def get_admin_ids() -> list:
-    """Retourne la liste des IDs admin"""
-    return ADMIN_IDS
+# Clé API OCR.space
+OCR_API_KEY = os.getenv('OCR_API_KEY', 'K86527928888957')
 
+# Lien de paiement MoneyFusion
+PAYMENT_LINK = os.getenv('PAYMENT_LINK', 'https://my.moneyfusion.net/6977f7502181d4ebf722398d')
+
+# Tarification
+BASE_MONTANT = int(os.getenv('BASE_MONTANT', '205'))  # FCFA
+BASE_MINUTES = int(os.getenv('BASE_MINUTES', '1440'))  # 24h
+
+# ============================================================
+# CONFIGURATION CANAUX (valeurs par défaut, modifiables via commandes)
+# ============================================================
+
+# Canal source (où le bot lit les numéros)
+DEFAULT_SOURCE_CHANNEL_ID = int(os.getenv('DEFAULT_SOURCE_CHANNEL_ID', '-1002682552255'))
+
+# Canal de prédiction (où le bot envoie les prédictions)
+DEFAULT_PREDICTION_CHANNEL_ID = int(os.getenv('DEFAULT_PREDICTION_CHANNEL_ID', '-1003329818758'))
+
+# Canal VIP (canal privé des abonnés)
+DEFAULT_VIP_CHANNEL_ID = int(os.getenv('DEFAULT_VIP_CHANNEL_ID', '-1003329818758'))
+
+# Lien d'invitation VIP
+DEFAULT_VIP_CHANNEL_LINK = os.getenv('DEFAULT_VIP_CHANNEL_LINK', 'https://t.me/+s3y7GejUVHU0YjE0')
+
+# ============================================================
+# CONFIGURATION ESSAI GRATUIT
+# ============================================================
+
+# Durée essai gratuit en minutes
+TRIAL_DURATION_MINUTES = int(os.getenv('TRIAL_DURATION_MINUTES', '15'))
+
+# ============================================================
+# CONFIGURATION LOGGING
+# ============================================================
+
+# Niveau de log
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
+
+# Format des logs
+LOG_FORMAT = os.getenv('LOG_FORMAT', '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# ============================================================
+# FICHIERS DE DONNÉES (chemins relatifs pour Render)
+# ============================================================
+
+# Dossier de données (Render a un filesystem éphémère sauf si disque persistant)
+DATA_DIR = os.getenv('DATA_DIR', '/data' if RENDER_DEPLOYMENT else '.')
+
+# Fichiers JSON
+USERS_FILE = os.path.join(DATA_DIR, 'users_data.json')
+CHANNELS_CONFIG_FILE = os.path.join(DATA_DIR, 'channels_config.json')
+TRIAL_CONFIG_FILE = os.path.join(DATA_DIR, 'trial_config.json')
+OCR_DATA_FILE = os.path.join(DATA_DIR, 'ocr_data.json')
+VALIDATED_PAYMENTS_FILE = os.path.join(DATA_DIR, 'validated_payments.json')
+
+# ============================================================
+# VÉRIFICATIONS ET VALIDATIONS
+# ============================================================
+
+def validate_config():
+    """Vérifie que la configuration est complète"""
+    errors = []
+    
+    if not API_ID or API_ID == 0:
+        errors.append("API_ID manquant")
+    
+    if not API_HASH:
+        errors.append("API_HASH manquant")
+    
+    if not BOT_TOKEN:
+        errors.append("BOT_TOKEN manquant")
+    
+    if not ADMIN_ID:
+        errors.append("ADMIN_ID manquant")
+    
+    if errors:
+        raise ValueError(f"Configuration invalide: {', '.join(errors)}")
+    
+    return True
+
+# Validation au chargement
+try:
+    validate_config()
+    print("✅ Configuration validée avec succès")
+except ValueError as e:
+    print(f"❌ {e}")
+    raise
+
+# ============================================================
+# AFFICHAGE CONFIG (pour debug)
+# ============================================================
+
+if __name__ == '__main__':
+    print("=" * 50)
+    print("CONFIGURATION BOT VIP")
+    print("=" * 50)
+    print(f"API_ID: {API_ID}")
+    print(f"ADMIN_ID: {ADMIN_ID}")
+    print(f"PORT: {PORT}")
+    print(f"RENDER_DEPLOYMENT: {RENDER_DEPLOYMENT}")
+    print(f"PERSISTENCE_MODE: {PERSISTENCE_MODE}")
+    print(f"DATA_DIR: {DATA_DIR}")
+    print("=" * 50)
