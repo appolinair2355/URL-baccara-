@@ -80,7 +80,7 @@ DEFAULT_PREDICTION_CHANNEL_ID = int(os.getenv('DEFAULT_PREDICTION_CHANNEL_ID', '
 DEFAULT_VIP_CHANNEL_ID = int(os.getenv('DEFAULT_VIP_CHANNEL_ID', '-1003329818758'))
 
 # Lien d'invitation VIP
-DEFAULT_VIP_CHANNEL_LINK = os.getenv('DEFAULT_VIP_CHANNEL_LINK', 'https://t.me/+s3y7GejUVHU0YjE0')
+DEFAULT_VIP_CHANNEL_LINK = os.getenv('DEFAULT_VIP_CHANNEL_LINK', 'https://t.me/+Ju0A1LU7Zno5ZTM0')
 
 # ============================================================
 # CONFIGURATION ESSAI GRATUIT
