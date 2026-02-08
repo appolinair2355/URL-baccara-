@@ -1,7 +1,7 @@
 # Core
 telethon
 aiohttp
-Pillow>
+Pillow
 requests
 
 # Config
