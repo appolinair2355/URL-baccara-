@@ -25,14 +25,26 @@ API_HASH = os.getenv('API_HASH', 'a8639172fa8d35dbfd8ea46286d349ab')
 BOT_TOKEN = os.getenv('BOT_TOKEN', '8442253971:AAEisYucgZ49Ej2b-mK9_6DhNrqh9WOc_XU')
 ADMIN_ID = int(os.getenv('ADMIN_ID', '1190237801'))
 
-# Configuration Render
+# Configuration Render - CORRIGÉ : utiliser ./data au lieu de /data
 PORT = int(os.getenv('PORT', '10000'))
 RENDER_DEPLOYMENT = os.getenv('RENDER_DEPLOYMENT', 'true').lower() == 'true'
 TELEGRAM_SESSION = os.getenv('TELEGRAM_SESSION', '')
 
-# Dossier de données (Render utilise /data avec disque persistant)
-DATA_DIR = os.getenv('DATA_DIR', '/data' if RENDER_DEPLOYMENT else '.')
-if RENDER_DEPLOYMENT and not os.path.exists(DATA_DIR):
+# Dossier de données - CORRIGÉ : chemin relatif obligatoire sur Render
+DATA_DIR = os.getenv('DATA_DIR', './data')
+
+# Créer le dossier de données avec gestion d'erreur
+try:
+    if not os.path.exists(DATA_DIR):
+        os.makedirs(DATA_DIR, exist_ok=True)
+        print(f"✅ Dossier créé : {DATA_DIR}")
+except PermissionError as e:
+    print(f"⚠️ Permission refusée pour {DATA_DIR}, utilisation de ./data")
+    DATA_DIR = './data'
+    os.makedirs(DATA_DIR, exist_ok=True)
+except Exception as e:
+    print(f"⚠️ Erreur création dossier : {e}, utilisation de ./data")
+    DATA_DIR = './data'
     os.makedirs(DATA_DIR, exist_ok=True)
 
 # Fichiers de données
@@ -121,6 +133,11 @@ def load_json(file_path, default=None):
 
 def save_json(file_path, data):
     try:
+        # S'assurer que le dossier existe
+        dir_path = os.path.dirname(file_path)
+        if dir_path and not os.path.exists(dir_path):
+            os.makedirs(dir_path, exist_ok=True)
+        
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
