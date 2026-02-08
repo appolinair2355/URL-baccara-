@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: prediction-bot
+    runtime: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python main.py"
+    envVars:
+      - key: BOT_TOKEN
+        value: 8442253971:AAEisYucgZ49Ej2b-mK9_6DhNrqh9WOc_XU
+      - key: CHANNEL_ID
+        value: -1003846785063
+      - key: ADMIN_IDS
+        value: "1190237801"
+      - key: PORT
+        value: 10000
+      - key: PYTHON_VERSION
+        value: 3.11.0
+        
