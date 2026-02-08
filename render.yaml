@@ -1,19 +1,33 @@
 services:
   - type: web
-    name: prediction-bot
+    name: bot-vip-sossou
     runtime: python
-    plan: free
+    plan: free  # ou starter pour plus de RAM
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python main.py"
     envVars:
-      - key: BOT_TOKEN
-        value: 8442253971:AAEisYucgZ49Ej2b-mK9_6DhNrqh9WOc_XU
-      - key: CHANNEL_ID
-        value: -1003846785063
-      - key: ADMIN_IDS
-        value: "1190237801"
-      - key: PORT
-        value: 10000
       - key: PYTHON_VERSION
         value: 3.11.0
-        
+      - key: PORT
+        value: 10000
+      - key: RENDER_DEPLOYMENT
+        value: true
+      - key: API_ID
+        sync: false  # Manuel dans le dashboard Render
+      - key: API_HASH
+        sync: false
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      - key: TELEGRAM_SESSION
+        sync: false  # Généré au premier démarrage
+      - key: PERSISTENCE_MODE
+        value: json  # ou postgres si vous avez une DB
+      - key: DATA_DIR
+        value: /data
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1  # 1GB gratuit sur Render
+      
