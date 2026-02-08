@@ -1,4 +1,17 @@
-python-telegram-bot
+# Core
+telethon
 aiohttp
+Pillow>
 requests
+
+# Config
+python-dotenv
+
+# Optionnel pour PostgreSQL sur Render
+# psycopg2-binary
+# asyncpg
+
+# Utils
+aiofiles
+
 
