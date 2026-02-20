@@ -663,7 +663,7 @@ async def auto_kick_and_notify(user_id: int, delay_seconds: int):
         try:
             vip_success = await remove_user_from_channel(vip_id, user_id)
             logger.info(f"{'✅' if vip_success else '❌'} Retrait VIP {user_id}")
-        except Exception as e:
+                except Exception as e:
             logger.error(f"Erreur retrait VIP {user_id}: {e}")
         
         # METTRE À JOUR LA BASE
