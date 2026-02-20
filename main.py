@@ -647,27 +647,7 @@ async def auto_kick_and_notify(user_id: int, delay_seconds: int):
         uid_str = str(user_id)
         vip_id = get_vip_channel_id()
         
-        already_notified = expired_notified.get(uid_str, False)
         
-        # 1. RETIRER DU CANAL VIP
-        vip_success = False
-        try:
-            vip_success = await remove_user_from_channel(vip_id, user_id)
-            logger.info(f"{'✅' if vip_success else '❌'} Retrait VIP {user_id}")
-        except Exception as e:
-            logger.error(f"Erreur retrait VIP {user_id}: {e}")
-        
-            try:
-            except Exception as e:
-                logger.error(f"Erreur retrait Prédiction {user_id}: {e}")
-        
-        # 3. METTRE À JOUR LA BASE
-        update_user(user_id, {
-            'vip_expires_at': None,
-            'subscription_end': None,
-            'is_in_channel': False,
-            'trial_used': True
-        })
         
         # 4. NOTIFIER L'UTILISATEUR (seulement si pas déjà notifié)
         if not already_notified:
@@ -676,7 +656,24 @@ async def auto_kick_and_notify(user_id: int, delay_seconds: int):
 😢 **VOTRE ACCÈS EST TERMINÉ** 😢
 
 ⏰ *Votre abonnement VIP a expiré.*
-{'✅ Vous avez été retiré automatiquement du canal.' if vip_success else '⚠️ Contactez l\'admin pour être retiré du canal.'}
+{'✅ Vous avez été retiré automatiquement du canal.' if vip_success else '⚠️ Contac        already_notified = expired_notified.get(uid_str, False)
+        
+        # RETIRER DU CANAL VIP
+        vip_success = False
+        try:
+            vip_success = await remove_user_from_channel(vip_id, user_id)
+            logger.info(f"{'✅' if vip_success else '❌'} Retrait VIP {user_id}")
+        except Exception as e:
+            logger.error(f"Erreur retrait VIP {user_id}: {e}")
+        
+        # METTRE À JOUR LA BASE
+        update_user(user_id, {
+            'vip_expires_at': None,
+            'subscription_end': None,
+            'is_in_channel': False,
+            'trial_used': True
+        })
+tez l\'admin pour être retiré du canal.'}
 
 💔 *Nous espérons que vous avez apprécié l'expérience !*
 
