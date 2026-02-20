@@ -657,13 +657,14 @@ async def auto_kick_and_notify(user_id: int, delay_seconds: int):
 
 ⏰ *Votre abonnement VIP a expiré.*
 {'✅ Vous avez été retiré automatiquement du canal.' if vip_success else '⚠️ Contac        already_notified = expired_notified.get(uid_str, False)
+                already_notified = expired_notified.get(uid_str, False)
         
         # RETIRER DU CANAL VIP
         vip_success = False
         try:
             vip_success = await remove_user_from_channel(vip_id, user_id)
             logger.info(f"{'✅' if vip_success else '❌'} Retrait VIP {user_id}")
-                except Exception as e:
+        except Exception as e:
             logger.error(f"Erreur retrait VIP {user_id}: {e}")
         
         # METTRE À JOUR LA BASE
@@ -673,7 +674,15 @@ async def auto_kick_and_notify(user_id: int, delay_seconds: int):
             'is_in_channel': False,
             'trial_used': True
         })
-tez l\'admin pour être retiré du canal.'}
+        
+        # NOTIFIER L'UTILISATEUR (seulement si pas déjà notifié)
+        if not already_notified:
+            try:
+                await client.send_message(user_id, f"""
+😢 **VOTRE ACCÈS EST TERMINÉ** 😢
+
+⏰ *Votre abonnement VIP a expiré.*
+{'✅ Vous avez été retiré automatiquement du canal.' if vip_success else '⚠️ Contactez l\'admin pour être retiré du canal.'}
 
 💔 *Nous espérons que vous avez apprécié l'expérience !*
 
