@@ -53,16 +53,15 @@ VALIDATED_PAYMENTS_FILE = os.path.join(DATA_DIR, 'validated_payments.json')
 EXPIRED_NOTIFIED_FILE = os.path.join(DATA_DIR, 'expired_notified.json')
 
 OCR_API_KEY = os.getenv('OCR_API_KEY', 'K86527928888957')
-PAYMENT_LINK = os.getenv('PAYMENT_LINK', 'https://my.moneyfusion.net/6977f7502181d4ebf722398d')
-BASE_MONTANT = int(os.getenv('BASE_MONTANT', '205'))
-BASE_MINUTES = int(os.getenv('BASE_MINUTES', '1440'))
+PAYMENT_LINK = os.getenv('PAYMENT_LINK', 'https://my.moneyfusion.net/69988c55ee1fe6f8b700aa50')
+BASE_MONTANT = int(os.getenv('BASE_MONTANT', '5000'))
+BASE_MINUTES = int(os.getenv('BASE_MINUTES', '10080'))
 
 DEFAULT_SOURCE_CHANNEL_ID = int(os.getenv('DEFAULT_SOURCE_CHANNEL_ID', '-1002682552255'))
-DEFAULT_PREDICTION_CHANNEL_ID = int(os.getenv('DEFAULT_PREDICTION_CHANNEL_ID', '-1003329818758'))
 DEFAULT_VIP_CHANNEL_ID = int(os.getenv('DEFAULT_VIP_CHANNEL_ID', '-1003329818758'))
 DEFAULT_VIP_CHANNEL_LINK = os.getenv('DEFAULT_VIP_CHANNEL_LINK', 'https://t.me/+s3y7GejUVHU0YjE0')
 
-DEFAULT_TRIAL_DURATION = int(os.getenv('TRIAL_DURATION_MINUTES', '15'))
+DEFAULT_TRIAL_DURATION = int(os.getenv('TRIAL_DURATION_MINUTES', '360'))
 
 # ============================================================
 # LOGGING
@@ -93,7 +92,6 @@ client = TelegramClient(StringSession(TELEGRAM_SESSION), API_ID, API_HASH)
 
 channels_config = {
     'source_channel_id': DEFAULT_SOURCE_CHANNEL_ID,
-    'prediction_channel_id': DEFAULT_PREDICTION_CHANNEL_ID,
     'vip_channel_id': DEFAULT_VIP_CHANNEL_ID,
     'vip_channel_link': DEFAULT_VIP_CHANNEL_LINK
 }
@@ -156,8 +154,6 @@ def get_vip_channel_id():
 def get_vip_channel_link():
     return channels_config.get('vip_channel_link', DEFAULT_VIP_CHANNEL_LINK)
 
-def get_prediction_channel_id():
-    return channels_config.get('prediction_channel_id', DEFAULT_PREDICTION_CHANNEL_ID)
 
 def get_user(user_id: int) -> dict:
     user_id_str = str(user_id)
@@ -403,7 +399,17 @@ def extraire_numero_facture(texte):
     return None
 
 def calculer_minutes(montant):
-    return int((montant / BASE_MONTANT) * BASE_MINUTES)
+    """
+    Calcule la durée en minutes selon les tarifs:
+    - 5000 FCFA = 1 semaine (10080 minutes)
+    - 20000 FCFA = 1 mois (43200 minutes)
+    """
+    if montant >= 20000:
+        return 43200  # 30 jours
+    elif montant >= 5000:
+        return 10080  # 7 jours
+    else:
+        return int((montant / 5000) * 10080)
 
 def formater_duree(minutes):
     jours = minutes // (24 * 60)
@@ -475,7 +481,7 @@ async def add_user_to_vip(user_id: int, duration_minutes: int, is_trial: bool = 
 
 ✨ *Votre essai gratuit est activé !* ✨
 
-⏳ **Durée :** 15 minutes
+⏳ **Durée :** 6 heures
 📅 **Expire le :** {expires_at.strftime('%d/%m/%Y à %H:%M')}
 
 🔗 **VOTRE PASS VIP :**
@@ -640,7 +646,6 @@ async def auto_kick_and_notify(user_id: int, delay_seconds: int):
         user = get_user(user_id)
         uid_str = str(user_id)
         vip_id = get_vip_channel_id()
-        pred_id = get_prediction_channel_id()
         
         already_notified = expired_notified.get(uid_str, False)
         
@@ -652,12 +657,7 @@ async def auto_kick_and_notify(user_id: int, delay_seconds: int):
         except Exception as e:
             logger.error(f"Erreur retrait VIP {user_id}: {e}")
         
-        # 2. RETIRER DU CANAL PRÉDICTION (si différent)
-        pred_success = False
-        if pred_id != vip_id:
             try:
-                pred_success = await remove_user_from_channel(pred_id, user_id)
-                logger.info(f"{'✅' if pred_success else '❌'} Retrait Prédiction {user_id}")
             except Exception as e:
                 logger.error(f"Erreur retrait Prédiction {user_id}: {e}")
         
@@ -712,7 +712,6 @@ async def auto_kick_and_notify(user_id: int, delay_seconds: int):
 
 **Actions :**
 {'✅' if vip_success else '❌'} Retrait canal VIP
-{'✅' if pred_success else '❌'} Retrait canal Prédiction
 ✅ Base de données mise à jour
 {'✅' if not already_notified else '⏭️'} Notification utilisateur
 
@@ -756,7 +755,6 @@ async def cmd_start(event):
 ⚙️ **CONFIGURATION :**
 🔗 `/setviplink URL` - Changer lien VIP
 🆔 `/setvipid ID` - Changer ID canal VIP
-🎯 `/setpredictionid ID` - Changer ID prédiction
 📊 `/showids` - Voir configuration actuelle
 
 📈 **STATISTIQUES :**
@@ -799,7 +797,7 @@ async def cmd_start(event):
 🌟 *Vous êtes sur le point de découvrir quelque chose d'EXTRAORDINAIRE !* 🌟
 
 🎁 **EN CADEAU DE BIENVENUE :**
-⏱️ **15 MINUTES D'ESSAI GRATUIT !**
+⏱️ **6 HEURES D'ESSAI GRATUIT !**
 
 💎 *Accès immédiat au canal VIP !*
 🔥 *Découvrez le système exclusif !*
@@ -839,7 +837,6 @@ async def cmd_help(event):
 **Configuration système :**
 `/setviplink https://t.me/...` - Nouveau lien VIP
 `/setvipid -100...` - Nouveau canal VIP
-`/setpredictionid -100...` - Canal prédiction
 `/showids` - Voir tout
 
 **Données :**
@@ -902,7 +899,7 @@ async def cmd_payer(event):
 
 👉 Tapez `/start` pour vous inscrire
 
-🎁 *15 minutes gratuites vous attendent !*
+🎁 *6 heures gratuites vous attendent !*
 """)
         return
     
@@ -917,7 +914,8 @@ async def cmd_payer(event):
 🌟 *Rejoignez l'élite dès maintenant !* 🌟
 
 💰 **TARIF AVANTAGEUX :**
-🔥 **{BASE_MONTANT} FCFA = {BASE_MINUTES // 60} HEURES** 🔥
+🔥 **5000 FCFA = 1 SEMAINE** 🔥
+💎 **20000 FCFA = 1 MOIS** 💎
 📈 *Calcul proportionnel automatique*
 
 **✨ Ce que vous obtenez :**
@@ -981,7 +979,7 @@ async def cmd_status(event):
 📝 *Créez votre compte d'abord :*
 👉 `/start`
 
-🎁 *Essai gratuit de 15 minutes !*
+🎁 *Essai gratuit de 6 heures !*
 """)
         return
     
@@ -1598,7 +1596,6 @@ async def cmd_retirer(event):
 
 ⚠️ *L'utilisateur sera immédiatement :*
 • ❌ Expulsé du canal VIP
-• 🚫 Retiré du canal prédiction (si différent)
 • 📵 Accès révoqué dans la base
 
 💡 Trouvez l'ID avec `/users` ou `/scan`
@@ -1611,7 +1608,6 @@ async def cmd_retirer(event):
         
         user = get_user(target_id)
         vip_id = get_vip_channel_id()
-        pred_id = get_prediction_channel_id()
         
         results = []
         
@@ -1622,13 +1618,8 @@ async def cmd_retirer(event):
         except Exception as e:
             results.append(f"❌ Canal VIP: {e}")
         
-        # 2. Retirer du canal prédiction (si différent)
-        if pred_id != vip_id:
             try:
-                success = await remove_user_from_channel(pred_id, target_id)
-                results.append(f"{'✅' if success else '❌'} Canal Prédiction")
             except Exception as e:
-                results.append(f"❌ Canal Prédiction: {e}")
         
         # 3. Mettre à jour la base
         update_user(target_id, {
@@ -1788,36 +1779,6 @@ async def cmd_setvipid(event):
     except ValueError:
         await event.respond("❌ *ID invalide (doit être un nombre)*")
 
-@client.on(events.NewMessage(pattern=r'^/setpredictionid(\s+.+)?$'))
-async def cmd_setpredictionid(event):
-    if event.sender_id != ADMIN_ID:
-        return
-    
-    parts = event.message.message.strip().split()
-    
-    if len(parts) < 2:
-        await event.respond(f"""
-🎯 **MODIFICATION ID CANAL PRÉDICTION**
-
-**Actuel :** `{get_prediction_channel_id()}`
-
-**Usage :** `/setpredictionid -1009876543210`
-""")
-        return
-    
-    try:
-        new_id = int(parts[1])
-        channels_config['prediction_channel_id'] = new_id
-        save_json(CHANNELS_CONFIG_FILE, channels_config)
-        
-        await event.respond(f"""
-✅ **ID PRÉDICTION MIS À JOUR**
-
-🎯 **Nouvel ID :** `{new_id}`
-""")
-    except ValueError:
-        await event.respond("❌ *ID invalide*")
-
 @client.on(events.NewMessage(pattern='/showids'))
 async def cmd_showids(event):
     if event.sender_id != ADMIN_ID:
@@ -1832,10 +1793,9 @@ async def cmd_showids(event):
 🆔 **ID Canal VIP :**
 `{get_vip_channel_id()}`
 
-🎯 **ID Canal Prédiction :**
-`{get_prediction_channel_id()}`
 
-💡 *Utilisez /setviplink, /setvipid, /setpredictionid pour modifier*
+
+💡 *Utilisez /setviplink, /setvipid pour modifier*
 """)
 
 @client.on(events.NewMessage(pattern='/stats'))
@@ -1855,7 +1815,7 @@ async def cmd_stats(event):
 ✅ **Validations auto :** {total_validated}
 
 💱 **Base tarifaire :**
-{BASE_MONTANT} FCFA = {BASE_MINUTES} minutes (24h)
+5000 FCFA = 1 semaine | 20000 FCFA = 1 mois
 """)
 
 @client.on(events.NewMessage(pattern='/validated'))
@@ -1959,7 +1919,7 @@ async def handle_messages(event):
 🎊 **INSCRIPTION RÉUSSIE !** 🎊
 
 ✅ *Votre compte est créé !*
-🎁 *15 minutes gratuites activées !*
+🎁 *6 heures gratuites activées !*
 
 ⚡ *Votre lien VIP arrive...*
 """)
@@ -2223,7 +2183,7 @@ async def web_index(request):
         <div class="info-bar">
             <span class="status-indicator"></span>
             <strong>🟢 SYSTÈME OPÉRATIONNEL</strong><br><br>
-            💳 Tarif : {BASE_MONTANT} FCFA = {BASE_MINUTES} min (24h)<br>
+            💳 Tarifs : 5000 FCFA = 1 semaine | 20000 FCFA = 1 mois<br>
             🤖 Validation OCR automatique<br>
             ⚡ Lien VIP 30 secondes<br><br>
             <small>🔄 Mis à jour : {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}</small>
