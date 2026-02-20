@@ -60,21 +60,15 @@ PERSISTENCE_MODE = os.getenv('PERSISTENCE_MODE', 'json')
 OCR_API_KEY = os.getenv('OCR_API_KEY', 'K86527928888957')
 
 # Lien de paiement MoneyFusion
-PAYMENT_LINK = os.getenv('PAYMENT_LINK', 'https://my.moneyfusion.net/6977f7502181d4ebf722398d')
+PAYMENT_LINK = os.getenv('PAYMENT_LINK', 'https://my.moneyfusion.net/69988c55ee1fe6f8b700aa50')
 
 # Tarification
-BASE_MONTANT = int(os.getenv('BASE_MONTANT', '205'))  # FCFA
-BASE_MINUTES = int(os.getenv('BASE_MINUTES', '1440'))  # 24h
+BASE_MONTANT = int(os.getenv('BASE_MONTANT', '5000'))  # FCFA - Tarif semaine
+BASE_MINUTES = int(os.getenv('BASE_MINUTES', '10080'))  # 7 jours (1 semaine)
 
 # ============================================================
 # CONFIGURATION CANAUX (valeurs par défaut, modifiables via commandes)
 # ============================================================
-
-# Canal source (où le bot lit les numéros)
-DEFAULT_SOURCE_CHANNEL_ID = int(os.getenv('DEFAULT_SOURCE_CHANNEL_ID', '-1002682552255'))
-
-# Canal de prédiction (où le bot envoie les prédictions)
-DEFAULT_PREDICTION_CHANNEL_ID = int(os.getenv('DEFAULT_PREDICTION_CHANNEL_ID', '-1003329818758'))
 
 # Canal VIP (canal privé des abonnés)
 DEFAULT_VIP_CHANNEL_ID = int(os.getenv('DEFAULT_VIP_CHANNEL_ID', '-1003329818758'))
@@ -87,7 +81,7 @@ DEFAULT_VIP_CHANNEL_LINK = os.getenv('DEFAULT_VIP_CHANNEL_LINK', 'https://t.me/+
 # ============================================================
 
 # Durée essai gratuit en minutes
-TRIAL_DURATION_MINUTES = int(os.getenv('TRIAL_DURATION_MINUTES', '15'))
+TRIAL_DURATION_MINUTES = int(os.getenv('TRIAL_DURATION_MINUTES', '360'))  # 6 heures
 
 # ============================================================
 # CONFIGURATION LOGGING
@@ -120,22 +114,22 @@ VALIDATED_PAYMENTS_FILE = os.path.join(DATA_DIR, 'validated_payments.json')
 def validate_config():
     """Vérifie que la configuration est complète"""
     errors = []
-    
+
     if not API_ID or API_ID == 0:
         errors.append("API_ID manquant")
-    
+
     if not API_HASH:
         errors.append("API_HASH manquant")
-    
+
     if not BOT_TOKEN:
         errors.append("BOT_TOKEN manquant")
-    
+
     if not ADMIN_ID:
         errors.append("ADMIN_ID manquant")
-    
+
     if errors:
         raise ValueError(f"Configuration invalide: {', '.join(errors)}")
-    
+
     return True
 
 # Validation au chargement
